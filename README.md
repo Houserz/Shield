@@ -1,6 +1,4 @@
-# ESP32-S3 Dual-Core Data Acquisition System
-
-A high-performance, multi-sensor data acquisition system built on ESP32-S3 featuring dual-core architecture, mixed sampling rates, and SD card storage.
+# Shield Project
 
 ## Features
 
