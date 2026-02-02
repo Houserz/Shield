@@ -1,7 +1,7 @@
 /**
  * @file sd_storage.h
- * @brief SD card storage module (SDMMC 4-bit mode)
- * 
+ * @brief SD card storage module (SPI mode)
+ *
  * Provides SD card initialization, file system mounting, run directory management, etc.
  */
 
@@ -16,13 +16,11 @@
 
 // ==================== Configuration Parameters ====================
 
-// SD card SDMMC pin configuration (ESP32-S3 default)
-#define SD_PIN_CMD      38
-#define SD_PIN_CLK      39
-#define SD_PIN_D0       40
-#define SD_PIN_D1       41
-#define SD_PIN_D2       42
-#define SD_PIN_D3       43
+// SD card SPI pin configuration
+#define SD_PIN_MISO     37
+#define SD_PIN_MOSI     35
+#define SD_PIN_SCK      36
+#define SD_PIN_CS       5
 
 // SD card mount point
 #define SD_MOUNT_POINT  "/sdcard"
@@ -79,8 +77,8 @@ typedef struct {
 // ==================== Function Declarations ====================
 
 /**
- * @brief Initialize SD card (SDMMC 4-bit mode)
- * 
+ * @brief Initialize SD card (SPI mode)
+ *
  * @return true=success, false=failure
  */
 bool sd_storage_init(void);

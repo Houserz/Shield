@@ -1,17 +1,15 @@
 /**
  * @file sd_storage.c
- * @brief SD card storage module implementation
- * 
- * TODO: Implement SD card hardware driver
- * - Configure SDMMC pins (CLK, CMD, D0-D3)
- * - Test SD card read/write performance
- * - Ensure file system works properly
+ * @brief SD card storage module implementation (SPI mode)
  */
 
 #include "sd_storage.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
-#include "driver/sdmmc_host.h"
+#include "driver/sdspi_host.h"
+#include "driver/spi_common.h"
+#include "driver/gpio.h"
+#include "esp_log.h"
 #include <sys/stat.h>
 #include <sys/unistd.h>
 #include <string.h>
@@ -20,6 +18,8 @@
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+static const char *TAG = "SD_STORAGE";
 
 // Global storage manager instance
 static sd_storage_t storage = {0};
@@ -105,63 +105,71 @@ static bool write_to_buffer(file_buffer_t *buffer, const void *data, size_t size
 // ==================== Public API Implementation ====================
 
 /**
- * @brief Initialize SD card (SDMMC 4-bit mode)
- * 
- * TODO: Implement the following functions
- * 1. Configure ESP32-S3 SDMMC pins
- *    - CLK: GPIO14
- *    - CMD: GPIO15
- *    - D0: GPIO2
- *    - D1: GPIO4
- *    - D2: GPIO12
- *    - D3: GPIO13
- *    (Note: Above pins are examples, adjust based on actual PCB design)
- * 2. Initialize SDMMC host controller
- * 3. Detect and mount SD card
- * 4. Configure FAT file system
+ * @brief Initialize SD card (SPI mode)
  */
 bool sd_storage_init(void) {
     if (storage.initialized) {
         return true;
     }
-    
-    // TODO: Implement SDMMC initialization
-    // Reference: ESP-IDF SDMMC example
-    // https://github.com/espressif/esp-idf/tree/master/examples/storage/sd_card/sdmmc
-    
-    // Configure SDMMC host
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED; // 40MHz
-    
-    // Configure slot (4-bit mode)
-    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot_config.width = 4; // 4-bit mode
-    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    
-    // Mount FAT file system
+
+    ESP_LOGI(TAG, "Initializing SD card");
+
+    esp_err_t ret;
+
+    // Enable internal pull-up on CS pin
+    gpio_set_pull_mode(SD_PIN_CS, GPIO_PULLUP_ONLY);
+
+    // Options for mounting the filesystem
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 5,
-        .allocation_unit_size = 16 * 1024 // 16KB cluster size (improves performance)
+        .allocation_unit_size = 16 * 1024
+    };
+
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.max_freq_khz = SDMMC_FREQ_PROBING;
+
+    spi_bus_config_t bus_cfg = {
+        .mosi_io_num = SD_PIN_MOSI,
+        .miso_io_num = SD_PIN_MISO,
+        .sclk_io_num = SD_PIN_SCK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4000,
     };
     
-    esp_err_t ret = esp_vfs_fat_sdmmc_mount(
-        SD_MOUNT_POINT,
-        &host,
-        &slot_config,
-        &mount_config,
-        &card
-    );
-    
+    ret = spi_bus_initialize(host.slot, &bus_cfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize bus: %s", esp_err_to_name(ret));
         return false;
     }
-    
+
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot_config.gpio_cs = SD_PIN_CS;
+    slot_config.host_id = host.slot;
+
+    ESP_LOGI(TAG, "SPI Initialized");
+
+    ret = esp_vfs_fat_sdspi_mount(SD_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount filesystem.");
+        } else {
+            ESP_LOGE(TAG, "SD CARD FAILED, OR NOT PRESENT! Error: %s", esp_err_to_name(ret));
+        }
+        spi_bus_free(host.slot);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "SD CARD INITIALIZED.");
+    sdmmc_card_print_info(stdout, card);
+
     storage.initialized = true;
     storage.mounted = true;
     storage.total_bytes_written = 0;
     storage.write_error_count = 0;
-    
+
     return true;
 }
 
@@ -180,7 +188,10 @@ void sd_storage_deinit(void) {
     
     // Unmount file system
     esp_vfs_fat_sdcard_unmount(SD_MOUNT_POINT, card);
-    
+
+    // Free the SPI bus
+    spi_bus_free(SPI2_HOST);
+
     storage.initialized = false;
     storage.mounted = false;
 }
