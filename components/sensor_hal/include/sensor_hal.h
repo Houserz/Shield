@@ -10,7 +10,9 @@ typedef enum {
     SENSOR_TYPE_TEMP,
     SENSOR_TYPE_PRESSURE,
     SENSOR_TYPE_VIBRATION,
-    SENSOR_TYPE_CURRENT
+    SENSOR_TYPE_CURRENT,
+    SENSOR_TYPE_MICROPHONE,
+    SENSOR_TYPE_PHOTODIODE
 } sensor_type_t;
 
 // Sensor context structure (implements OOP polymorphism)
@@ -52,9 +54,20 @@ typedef struct {
 } adc_config_t;
 
 // GPIO configuration (for SW-420 vibration sensor)
+// Note: Renamed to avoid conflict with ESP-IDF's gpio_config_t
 typedef struct {
     int gpio_pin;
-} gpio_config_t;
+} vibration_gpio_config_t;
+
+// I2S configuration (for INMP441 microphone)
+// Named inmp441_i2s_config_t to avoid clash with ESP-IDF i2s_config_t
+typedef struct {
+    int i2s_port;       // I2S port (e.g. I2S_NUM_0)
+    int bck_pin;        // Bit clock (BCK) GPIO
+    int ws_pin;         // Word select (WS/LRCLK) GPIO
+    int data_in_pin;    // Data input (SD) GPIO
+    int sample_rate_hz; // I2S sample rate (e.g. 16000 for INMP441)
+} inmp441_i2s_config_t;
 
 // ==================== Driver Function Declarations ====================
 
@@ -77,6 +90,14 @@ bool mpl3115_read_sample(SensorContext_t *ctx, float *data_out);
 // MCP9808 Temperature Sensor (I2C, 50Hz)
 bool mcp9808_init(SensorContext_t *ctx);
 bool mcp9808_read_sample(SensorContext_t *ctx, float *data_out);
+
+// INMP441 Microphone (I2S, 1kHz high-rate)
+bool inmp441_init(SensorContext_t *ctx);
+bool inmp441_read_sample(SensorContext_t *ctx, float *data_out);
+
+// 751-1015-ND Photodiode (ADC, 200Hz medium-rate)
+bool photodiode_init(SensorContext_t *ctx);
+bool photodiode_read_sample(SensorContext_t *ctx, float *data_out);
 
 #endif // SENSOR_HAL_H
 

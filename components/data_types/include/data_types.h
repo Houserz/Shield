@@ -12,36 +12,40 @@
 #include <stdbool.h>
 
 // ==================== Queue Configuration ====================
-#define FAST_QUEUE_SIZE     200     // 1kHz × 2 sensors × 100ms buffer
-#define MEDIUM_QUEUE_SIZE   20      // 200Hz × 1 sensor × 100ms buffer
+#define FAST_QUEUE_SIZE     300     // 1kHz × 3 sensors (IMU, Vibration, Microphone) × 100ms buffer
+#define MEDIUM_QUEUE_SIZE   40      // 200Hz × 2 sensors (Current, Photodiode) × 100ms buffer
 #define SLOW_QUEUE_SIZE     10      // 50Hz × 2 sensors × 100ms buffer
 
 // ==================== Binary Data Packet Formats ====================
 
 /**
- * @brief Fast data record (IMU + Vibration)
+ * @brief Fast data record (IMU, Vibration, Microphone)
  * 
  * File: fast_data.bin
  * Sample rate: 1kHz
  * Size: 16 bytes/record
+ * Sensor IDs: 0=IMU, 1=Vibration, 5=Microphone
  */
 typedef struct __attribute__((packed)) {
     uint32_t timestamp_ms;    // Timestamp (milliseconds)
-    uint8_t sensor_id;        // Sensor ID (0=IMU, 1=Vibration)
+    uint8_t sensor_id;        // Sensor ID (0=IMU, 1=Vibration, 5=Microphone)
     uint8_t reserved[3];      // Padding for alignment
     float data;               // Sensor data
 } fast_data_record_t;
 
 /**
- * @brief Medium data record (Current)
+ * @brief Medium data record (Current, Photodiode)
  * 
  * File: medium_data.bin
  * Sample rate: 200Hz
- * Size: 8 bytes/record
+ * Size: 12 bytes/record
+ * Sensor IDs: 2=Current, 6=Photodiode
  */
 typedef struct __attribute__((packed)) {
     uint32_t timestamp_ms;    // Timestamp (milliseconds)
-    float current;            // Current value (amperes)
+    uint8_t sensor_id;        // Sensor ID (2=Current, 6=Photodiode)
+    uint8_t reserved[3];      // Padding for alignment
+    float data;               // Sensor data (current in A, or photodiode voltage/level)
 } medium_data_record_t;
 
 /**

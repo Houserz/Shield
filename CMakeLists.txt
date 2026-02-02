@@ -1,11 +1,11 @@
-# 最小CMake版本要求
+# Minimum required CMake version
 cmake_minimum_required(VERSION 3.16)
 
-# 设置组件路径
+# Set path for extra components
 set(EXTRA_COMPONENT_DIRS components)
 
-# 包含ESP-IDF构建系统
+# Include ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-# 项目定义
+# Project definition
 project(shield_daq_pipeline)

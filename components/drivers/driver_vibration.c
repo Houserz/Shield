@@ -8,6 +8,7 @@
  */
 
 #include "sensor_hal.h"
+#include <stdlib.h>
 
 /**
  * @brief Initialize SW-420 vibration sensor
@@ -22,7 +23,7 @@
  */
 bool vibration_init(SensorContext_t *ctx) {
     // TODO: Implement GPIO initialization
-    // gpio_config_t *gpio_cfg = (gpio_config_t *)ctx->hw_config;
+    // vibration_gpio_config_t *gpio_cfg = (vibration_gpio_config_t *)ctx->hw_config;
     // Reference: ESP-IDF GPIO API - gpio_config()
     
     (void)ctx;

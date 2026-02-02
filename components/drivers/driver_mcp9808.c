@@ -8,6 +8,7 @@
  */
 
 #include "sensor_hal.h"
+#include <math.h>
 
 /**
  * @brief Initialize MCP9808 temperature sensor

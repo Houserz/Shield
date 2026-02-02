@@ -12,6 +12,8 @@
  *   - ACS723 (Current Sensor)
  *   - MPL3115A2 (Barometer)
  *   - Adafruit MCP9808 (Temperature Sensor)
+ *   - INMP441 (MEMS Microphone, I2S, high sample rate)
+ *   - 751-1015-ND (Photodiode, analog/ADC, medium sample rate)
  */
 
 #include <stdio.h>
@@ -47,7 +49,7 @@ static spi_config_t bno085_spi_cfg = {
 
 // SW-420 - GPIO Configuration
 // TODO: Confirm ESP32-S3 GPIO pin
-static gpio_config_t vibration_gpio_cfg = {
+static vibration_gpio_config_t vibration_gpio_cfg = {
     .gpio_pin = 0       // TODO: Set actual GPIO pin (any GPIO supporting input)
 };
 
@@ -76,9 +78,26 @@ static i2c_config_t mcp9808_i2c_cfg = {
     .device_addr = 0x18 // MCP9808 default I2C address
 };
 
+// INMP441 - I2S Configuration (high sample rate)
+// TODO: Confirm ESP32-S3 I2S pins (BCK, WS, SD)
+static inmp441_i2s_config_t inmp441_i2s_cfg = {
+    .i2s_port = 0,         // I2S_NUM_0
+    .bck_pin = 0,          // TODO: Set actual BCK GPIO
+    .ws_pin = 0,           // TODO: Set actual WS/LRCLK GPIO
+    .data_in_pin = 0,      // TODO: Set actual SD (data in) GPIO
+    .sample_rate_hz = 16000 // INMP441 typical; decimate to 1kHz logical rate
+};
+
+// 751-1015-ND Photodiode - ADC Configuration (medium sample rate)
+// TODO: Confirm ESP32-S3 ADC pin (ADC1: GPIO1-10)
+static adc_config_t photodiode_adc_cfg = {
+    .adc_channel = 1,   // TODO: Set actual ADC channel (use different from current)
+    .gpio_pin = 0       // TODO: Set corresponding GPIO (e.g. GPIO2 for ADC1_CH1)
+};
+
 // ==================== Sensor Array Definition ====================
 
-#define NUM_SENSORS 5
+#define NUM_SENSORS 7
 
 static SensorContext_t my_sensors[NUM_SENSORS] = {
     // [0] BNO085 IMU - Fast Tier
@@ -125,6 +144,24 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .hw_config = &mcp9808_i2c_cfg,
         .init = mcp9808_init,
         .read_sample = mcp9808_read_sample
+    },
+    // [5] INMP441 Microphone - Fast Tier (high sample rate)
+    {
+        .id = 5,
+        .type = SENSOR_TYPE_MICROPHONE,
+        .sampling_rate_hz = 1000,
+        .hw_config = &inmp441_i2s_cfg,
+        .init = inmp441_init,
+        .read_sample = inmp441_read_sample
+    },
+    // [6] 751-1015-ND Photodiode - Medium Tier (medium sample rate)
+    {
+        .id = 6,
+        .type = SENSOR_TYPE_PHOTODIODE,
+        .sampling_rate_hz = 200,
+        .hw_config = &photodiode_adc_cfg,
+        .init = photodiode_init,
+        .read_sample = photodiode_read_sample
     }
 };
 
@@ -132,7 +169,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
 
 /**
  * @brief Fast task (1kHz, Core 0)
- * For high-speed sensors (BNO085 IMU, SW-420 Vibration)
+ * For high-speed sensors (BNO085 IMU, SW-420 Vibration, INMP441 Microphone)
  */
 void vTaskFast(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -169,7 +206,7 @@ void vTaskFast(void *pvParameters) {
 
 /**
  * @brief Medium task (200Hz, Core 0)
- * For medium-speed sensors (ACS723 Current)
+ * For medium-speed sensors (ACS723 Current, 751-1015-ND Photodiode)
  */
 void vTaskMedium(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -184,7 +221,9 @@ void vTaskMedium(void *pvParameters) {
                         .type = QUEUE_MSG_DATA,
                         .data = {
                             .timestamp_ms = get_timestamp_ms(),
-                            .current = data
+                            .sensor_id = (uint8_t)my_sensors[i].id,
+                            .reserved = {0},
+                            .data = data
                         }
                     };
                     
@@ -210,7 +249,7 @@ void vTaskMedium(void *pvParameters) {
 void vTaskSlow(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(20);  // 20ms = 50Hz
-    
+
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
             if (my_sensors[i].sampling_rate_hz == 50) {
@@ -364,8 +403,6 @@ void app_main(void) {
     // Core 1 (APP_CPU): SD card write task (low priority)
     xTaskCreatePinnedToCore(vTaskSDWriter, "SDWriter", 8192, NULL, 5, NULL, 1);
     
-    // TODO: Modify run duration or change to button-triggered stop based on requirements
-    // Current: Automatically stops after 30 seconds (for testing)
     vTaskDelay(pdMS_TO_TICKS(30000));
     
     // Stop acquisition

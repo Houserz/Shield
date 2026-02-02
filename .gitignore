@@ -1,10 +1,14 @@
 # ESP-IDF build output
 build/
 dist/
+additional_content/
+tools/
 sdkconfig
 sdkconfig.old
 *.pyc
 __pycache__/
+.clangd
+.devcontainer/
 
 # Dependencies
 dependencies.lock
