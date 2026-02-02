@@ -21,9 +21,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "esp_log.h"
 #include "sensor_hal.h"
 #include "data_types.h"
 #include "sd_storage.h"
+
+static const char *TAG = "SHIELD";
 
 // ==================== Global Queue Handles ====================
 static QueueHandle_t fast_queue = NULL;
@@ -359,68 +362,101 @@ void vTaskSDWriter(void *pvParameters) {
  * TODO: Modify acquisition duration, trigger method, etc. based on actual requirements
  */
 void app_main(void) {
+    ESP_LOGI(TAG, "========== Project SHIELD starting ==========");
+
     // Initialize data types module
     data_types_init();
-    
-    // TODO: Implement SD card initialization (sd_storage_init function in sd_storage.c)
+    ESP_LOGI(TAG, "Data types module initialized");
+
+    // SD card initialization
+    ESP_LOGI(TAG, "Initializing SD card...");
     if (!sd_storage_init()) {
-        return;  // Initialization failed, exit
-    }
-    
-    // Initialize all sensors
-    for (int i = 0; i < NUM_SENSORS; i++) {
-        my_sensors[i].init(&my_sensors[i]);
-    }
-    
-    // TODO: Implement run session creation (sd_create_run_session function in sd_storage.c)
-    if (!sd_create_run_session()) {
+        ESP_LOGE(TAG, "SD card initialization FAILED - aborting");
         return;
     }
-    
+    ESP_LOGI(TAG, "SD card initialized OK");
+
+    // Initialize all sensors
+    const char *sensor_names[] = {"BNO085 IMU", "SW-420 Vibration", "ACS723 Current", "MPL3115 Pressure", "MCP9808 Temp"};
+    for (int i = 0; i < NUM_SENSORS; i++) {
+        ESP_LOGI(TAG, "Initializing sensor [%d] %s...", i, sensor_names[i]);
+        bool ok = my_sensors[i].init(&my_sensors[i]);
+        if (ok) {
+            ESP_LOGI(TAG, "  Sensor [%d] %s initialized OK", i, sensor_names[i]);
+        } else {
+            ESP_LOGE(TAG, "  Sensor [%d] %s initialization FAILED", i, sensor_names[i]);
+        }
+    }
+
+    // Create run session
+    ESP_LOGI(TAG, "Creating run session...");
+    if (!sd_create_run_session()) {
+        ESP_LOGE(TAG, "Run session creation FAILED - aborting");
+        return;
+    }
+
     const run_session_t *session = sd_get_current_session();
-    
+    ESP_LOGI(TAG, "Run session created: %s at %s", session->run_id, session->run_path);
+
     // Create metadata file
-    metadata_create(session->meta_file, session->run_id);
-    
-    // Create FreeRTOS queues (for data transfer from Core 0 to Core 1)
+    if (metadata_create(session->meta_file, session->run_id)) {
+        ESP_LOGI(TAG, "Metadata file created OK");
+    } else {
+        ESP_LOGE(TAG, "Metadata file creation FAILED");
+    }
+
+    // Create FreeRTOS queues
     fast_queue = xQueueCreate(FAST_QUEUE_SIZE, sizeof(fast_queue_msg_t));
     medium_queue = xQueueCreate(MEDIUM_QUEUE_SIZE, sizeof(medium_queue_msg_t));
     slow_queue = xQueueCreate(SLOW_QUEUE_SIZE, sizeof(slow_queue_msg_t));
-    
+
     if (!fast_queue || !medium_queue || !slow_queue) {
-        return;  // Queue creation failed
+        ESP_LOGE(TAG, "Queue creation FAILED (fast=%p medium=%p slow=%p) - aborting",
+                 fast_queue, medium_queue, slow_queue);
+        return;
     }
-    
+    ESP_LOGI(TAG, "FreeRTOS queues created OK");
+
     // Set to running state
     system_state = DAQ_STATE_RUNNING;
-    
-    // Create and pin tasks to corresponding cores
-    // Core 0 (PRO_CPU): Data acquisition tasks (high priority)
+    ESP_LOGI(TAG, "System state -> RUNNING, launching tasks...");
+
+    // Core 0 (PRO_CPU): Data acquisition tasks
     xTaskCreatePinnedToCore(vTaskFast, "FastTask", 4096, NULL, 10, NULL, 0);
     xTaskCreatePinnedToCore(vTaskMedium, "MediumTask", 4096, NULL, 8, NULL, 0);
     xTaskCreatePinnedToCore(vTaskSlow, "SlowTask", 4096, NULL, 6, NULL, 0);
-    
-    // Core 1 (APP_CPU): SD card write task (low priority)
+
+    // Core 1 (APP_CPU): SD card write task
     xTaskCreatePinnedToCore(vTaskSDWriter, "SDWriter", 8192, NULL, 5, NULL, 1);
     
+    // TODO: Modify run duration or change to button-triggered stop based on requirements
+    // Current: Automatically stops after 30 seconds (for testing)
     vTaskDelay(pdMS_TO_TICKS(30000));
-    
+
     // Stop acquisition
     system_state = DAQ_STATE_STOPPING;
-    
+    ESP_LOGI(TAG, "System state -> STOPPING");
+
     // Wait for tasks to end
     vTaskDelay(pdMS_TO_TICKS(1000));
-    
+
     // Finalize metadata
     metadata_finalize(session->meta_file);
-    
+    ESP_LOGI(TAG, "Metadata finalized");
+
     // Close session
     sd_close_run_session();
-    
+    ESP_LOGI(TAG, "Session closed");
+
     // Clean up resources
     vQueueDelete(fast_queue);
     vQueueDelete(medium_queue);
     vQueueDelete(slow_queue);
     sd_storage_deinit();
+
+    ESP_LOGI(TAG, "========== Project SHIELD finished ==========");
+    ESP_LOGI(TAG, "Stats: fast=%"PRIu32" medium=%"PRIu32" slow=%"PRIu32" overruns=%"PRIu32" sd_errors=%"PRIu32,
+             statistics.fast_samples, statistics.medium_samples, statistics.slow_samples,
+             statistics.queue_overruns, statistics.sd_errors);
 }
 
