@@ -40,14 +40,17 @@ static daq_statistics_t statistics = {0};
 // ==================== Hardware Configuration Instances ====================
 // TODO: Modify the following pin configurations based on actual hardware connections
 
-// BNO085 - SPI Configuration
-// TODO: Confirm ESP32-S3 SPI pin assignment
+// BNO085 - SPI Configuration (per Adafruit BNO085 datasheet)
+// SPI requires: CS, SCLK, MOSI, MISO, INT (data ready), RST (reset)
+// TODO: Set actual ESP32-S3 pins when hardware is connected
 static spi_config_t bno085_spi_cfg = {
-    .spi_host = 2,      // TODO: Choose SPI2 or SPI3
-    .cs_pin = 0,        // TODO: Set actual CS pin
-    .sclk_pin = 0,      // TODO: Set actual SCLK pin
-    .mosi_pin = 0,      // TODO: Set actual MOSI pin
-    .miso_pin = 0       // TODO: Set actual MISO pin
+    .spi_host = 2,      // SPI2 or SPI3
+    .cs_pin = 10,       // TODO: CS pin
+    .sclk_pin = 12,     // TODO: SCLK (SCK)
+    .mosi_pin = 13,     // TODO: MOSI (DI on BNO085)
+    .miso_pin = 14,     // TODO: MISO (SDA on BNO085)
+    .int_pin = -1,      // TODO: INT pin (data ready, active low) - use -1 if not connected
+    .rst_pin = -1       // TODO: RST pin (reset, active low) - use -1 if not connected
 };
 
 // SW-420 - GPIO Configuration
@@ -99,6 +102,7 @@ static adc_config_t photodiode_adc_cfg = {
 };
 
 // ==================== Sensor Array Definition ====================
+// Set .enabled = false to disable a sensor (skip init and acquisition)
 
 #define NUM_SENSORS 7
 
@@ -108,6 +112,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 0,
         .type = SENSOR_TYPE_IMU,
         .sampling_rate_hz = 1000,
+        .enabled = true,
         .hw_config = &bno085_spi_cfg,
         .init = bno085_init,
         .read_sample = bno085_read_sample
@@ -117,6 +122,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 1,
         .type = SENSOR_TYPE_VIBRATION,
         .sampling_rate_hz = 1000,
+        .enabled = true,
         .hw_config = &vibration_gpio_cfg,
         .init = vibration_init,
         .read_sample = vibration_read_sample
@@ -126,6 +132,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 2,
         .type = SENSOR_TYPE_CURRENT,
         .sampling_rate_hz = 200,
+        .enabled = true,
         .hw_config = &current_adc_cfg,
         .init = current_init,
         .read_sample = current_read_sample
@@ -135,6 +142,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 3,
         .type = SENSOR_TYPE_PRESSURE,
         .sampling_rate_hz = 50,
+        .enabled = true,
         .hw_config = &mpl3115_i2c_cfg,
         .init = mpl3115_init,
         .read_sample = mpl3115_read_sample
@@ -144,6 +152,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 4,
         .type = SENSOR_TYPE_TEMP,
         .sampling_rate_hz = 50,
+        .enabled = true,
         .hw_config = &mcp9808_i2c_cfg,
         .init = mcp9808_init,
         .read_sample = mcp9808_read_sample
@@ -153,6 +162,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 5,
         .type = SENSOR_TYPE_MICROPHONE,
         .sampling_rate_hz = 1000,
+        .enabled = true,
         .hw_config = &inmp441_i2s_cfg,
         .init = inmp441_init,
         .read_sample = inmp441_read_sample
@@ -162,6 +172,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 6,
         .type = SENSOR_TYPE_PHOTODIODE,
         .sampling_rate_hz = 200,
+        .enabled = true,
         .hw_config = &photodiode_adc_cfg,
         .init = photodiode_init,
         .read_sample = photodiode_read_sample
@@ -180,7 +191,7 @@ void vTaskFast(void *pvParameters) {
     
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
-            if (my_sensors[i].sampling_rate_hz == 1000) {
+            if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 1000) {
                 float data = 0.0f;
                 if (my_sensors[i].read_sample(&my_sensors[i], &data)) {
                     fast_queue_msg_t msg = {
@@ -217,7 +228,7 @@ void vTaskMedium(void *pvParameters) {
     
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
-            if (my_sensors[i].sampling_rate_hz == 200) {
+            if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 200) {
                 float data = 0.0f;
                 if (my_sensors[i].read_sample(&my_sensors[i], &data)) {
                     medium_queue_msg_t msg = {
@@ -255,7 +266,7 @@ void vTaskSlow(void *pvParameters) {
 
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
-            if (my_sensors[i].sampling_rate_hz == 50) {
+            if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 50) {
                 float data = 0.0f;
                 if (my_sensors[i].read_sample(&my_sensors[i], &data)) {
                     slow_queue_msg_t msg = {
@@ -377,8 +388,13 @@ void app_main(void) {
     ESP_LOGI(TAG, "SD card initialized OK");
 
     // Initialize all sensors
-    const char *sensor_names[] = {"BNO085 IMU", "SW-420 Vibration", "ACS723 Current", "MPL3115 Pressure", "MCP9808 Temp"};
+    const char *sensor_names[] = {"BNO085 IMU", "SW-420 Vibration", "ACS723 Current", "MPL3115 Pressure", "MCP9808 Temp",
+                                  "INMP441 Microphone", "751-1015-ND Photodiode"};
     for (int i = 0; i < NUM_SENSORS; i++) {
+        if (!my_sensors[i].enabled) {
+            ESP_LOGI(TAG, "Sensor [%d] %s disabled - skipping", i, sensor_names[i]);
+            continue;
+        }
         ESP_LOGI(TAG, "Initializing sensor [%d] %s...", i, sensor_names[i]);
         bool ok = my_sensors[i].init(&my_sensors[i]);
         if (ok) {

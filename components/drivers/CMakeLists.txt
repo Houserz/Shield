@@ -5,6 +5,6 @@ idf_component_register(
          "driver_mpl3115.c"
          "driver_mcp9808.c"
     INCLUDE_DIRS "."
-    REQUIRES sensor_hal
+    REQUIRES sensor_hal driver
 )
 

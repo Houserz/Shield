@@ -20,6 +20,7 @@ typedef struct SensorContext {
     int id;
     sensor_type_t type;
     int sampling_rate_hz; // 1000, 200, or 50
+    bool enabled;         // true = active, false = skip init and acquisition
     void *hw_config;      // Pointer to specific SPI/I2C/ADC config structure
     
     // Virtual function: initialize
@@ -31,12 +32,15 @@ typedef struct SensorContext {
 // ==================== Hardware Configuration Structures ====================
 
 // SPI configuration (for BNO085 IMU)
+// BNO085 SPI requires INT and RST pins per Adafruit datasheet
 typedef struct {
     int spi_host;
     int cs_pin;
     int sclk_pin;
     int mosi_pin;
     int miso_pin;
+    int int_pin;   // INT - Data ready, active low (required for SPI)
+    int rst_pin;   // RST - Reset, active low (required for SPI)
 } spi_config_t;
 
 // I2C configuration (for MPL3115A2 and MCP9808)
