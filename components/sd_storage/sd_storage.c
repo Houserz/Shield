@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include <sys/stat.h>
 #include <sys/unistd.h>
+#include <errno.h>
 #include <string.h>
 #include <stdio.h>
 #include <dirent.h>
@@ -113,6 +114,9 @@ bool sd_storage_init(void) {
     }
 
     ESP_LOGI(TAG, "Initializing SD card");
+
+    /* Give SD card time to power up after boot (some adapters need this) */
+    vTaskDelay(pdMS_TO_TICKS(200));
 
     esp_err_t ret;
 
@@ -218,6 +222,8 @@ bool sd_create_run_session(void) {
              "%s/%s", SD_MOUNT_POINT, storage.current_session.run_id);
     
     if (mkdir(storage.current_session.run_path, 0777) != 0) {
+        ESP_LOGE(TAG, "mkdir failed: path=%s errno=%d (%s)",
+                 storage.current_session.run_path, errno, strerror(errno));
         return false;
     }
     
@@ -238,7 +244,25 @@ bool sd_create_run_session(void) {
     storage.medium_buffer.file = fopen(storage.current_session.medium_file, "wb");
     storage.slow_buffer.file = fopen(storage.current_session.slow_file, "wb");
     
-    if (!storage.fast_buffer.file || !storage.medium_buffer.file || !storage.slow_buffer.file) {
+    if (!storage.fast_buffer.file) {
+        ESP_LOGE(TAG, "fopen failed (fast_data): path=%s errno=%d (%s)",
+                 storage.current_session.fast_file, errno, strerror(errno));
+        return false;
+    }
+    if (!storage.medium_buffer.file) {
+        ESP_LOGE(TAG, "fopen failed (medium_data): path=%s errno=%d (%s)",
+                 storage.current_session.medium_file, errno, strerror(errno));
+        fclose(storage.fast_buffer.file);
+        storage.fast_buffer.file = NULL;
+        return false;
+    }
+    if (!storage.slow_buffer.file) {
+        ESP_LOGE(TAG, "fopen failed (slow_data): path=%s errno=%d (%s)",
+                 storage.current_session.slow_file, errno, strerror(errno));
+        fclose(storage.fast_buffer.file);
+        fclose(storage.medium_buffer.file);
+        storage.fast_buffer.file = NULL;
+        storage.medium_buffer.file = NULL;
         return false;
     }
     
