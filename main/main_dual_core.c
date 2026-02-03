@@ -44,11 +44,11 @@ static daq_statistics_t statistics = {0};
 // SPI requires: CS, SCLK, MOSI, MISO, INT (data ready), RST (reset)
 // TODO: Set actual ESP32-S3 pins when hardware is connected
 static spi_config_t bno085_spi_cfg = {
-    .spi_host = 2,      // SPI2 or SPI3
+    .spi_host = 3,      // SPI3 (SPI2 used by SD card)
     .cs_pin = 10,       // TODO: CS pin
-    .sclk_pin = 12,     // TODO: SCLK (SCK)
-    .mosi_pin = 13,     // TODO: MOSI (DI on BNO085)
-    .miso_pin = 14,     // TODO: MISO (SDA on BNO085)
+    .sclk_pin = 36,     // TODO: SCLK (SCK)
+    .mosi_pin = 35,     // TODO: MOSI (DI on BNO085)
+    .miso_pin = 37,     // TODO: MISO (SDA on BNO085)
     .int_pin = -1,      // TODO: INT pin (data ready, active low) - use -1 if not connected
     .rst_pin = -1       // TODO: RST pin (reset, active low) - use -1 if not connected
 };
@@ -56,7 +56,7 @@ static spi_config_t bno085_spi_cfg = {
 // SW-420 - GPIO Configuration
 // TODO: Confirm ESP32-S3 GPIO pin
 static vibration_gpio_config_t vibration_gpio_cfg = {
-    .gpio_pin = 0       // TODO: Set actual GPIO pin (any GPIO supporting input)
+    .gpio_pin = 1       // TODO: Set actual GPIO pin (any GPIO supporting input)
 };
 
 // ACS723 - ADC Configuration
@@ -112,7 +112,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 0,
         .type = SENSOR_TYPE_IMU,
         .sampling_rate_hz = 1000,
-        .enabled = true,
+        .enabled = false,
         .hw_config = &bno085_spi_cfg,
         .init = bno085_init,
         .read_sample = bno085_read_sample
@@ -132,7 +132,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 2,
         .type = SENSOR_TYPE_CURRENT,
         .sampling_rate_hz = 200,
-        .enabled = true,
+        .enabled = false,
         .hw_config = &current_adc_cfg,
         .init = current_init,
         .read_sample = current_read_sample
@@ -142,7 +142,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 3,
         .type = SENSOR_TYPE_PRESSURE,
         .sampling_rate_hz = 50,
-        .enabled = true,
+        .enabled = false,
         .hw_config = &mpl3115_i2c_cfg,
         .init = mpl3115_init,
         .read_sample = mpl3115_read_sample
@@ -152,7 +152,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 4,
         .type = SENSOR_TYPE_TEMP,
         .sampling_rate_hz = 50,
-        .enabled = true,
+        .enabled = false,
         .hw_config = &mcp9808_i2c_cfg,
         .init = mcp9808_init,
         .read_sample = mcp9808_read_sample
@@ -162,7 +162,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 5,
         .type = SENSOR_TYPE_MICROPHONE,
         .sampling_rate_hz = 1000,
-        .enabled = true,
+        .enabled = false,
         .hw_config = &inmp441_i2s_cfg,
         .init = inmp441_init,
         .read_sample = inmp441_read_sample
@@ -172,7 +172,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 6,
         .type = SENSOR_TYPE_PHOTODIODE,
         .sampling_rate_hz = 200,
-        .enabled = true,
+        .enabled = false,
         .hw_config = &photodiode_adc_cfg,
         .init = photodiode_init,
         .read_sample = photodiode_read_sample
@@ -187,7 +187,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
  */
 void vTaskFast(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(1);  // 1ms = 1kHz
+    const TickType_t xFrequency = pdMS_TO_TICKS(1) > 0 ? pdMS_TO_TICKS(1) : 1;  // Min 1 tick
     
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
@@ -224,7 +224,7 @@ void vTaskFast(void *pvParameters) {
  */
 void vTaskMedium(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(5);  // 5ms = 200Hz
+    const TickType_t xFrequency = pdMS_TO_TICKS(5) > 0 ? pdMS_TO_TICKS(5) : 1;  // Min 1 tick
     
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {

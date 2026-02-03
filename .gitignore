@@ -7,15 +7,12 @@ sdkconfig
 sdkconfig.old
 *.pyc
 __pycache__/
-<<<<<<< HEAD
 .clangd
 .devcontainer/
-=======
 CLAUDE.md
 .clangd
 .claude/
->>>>>>> 4eb0e16 (Get SD storage working)
-
+.cache/
 # Dependencies
 dependencies.lock
 managed_components/
