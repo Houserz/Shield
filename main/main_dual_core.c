@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -42,15 +43,15 @@ static daq_statistics_t statistics = {0};
 
 // BNO085 - SPI Configuration (per Adafruit BNO085 datasheet)
 // SPI requires: CS, SCLK, MOSI, MISO, INT (data ready), RST (reset)
-// TODO: Set actual ESP32-S3 pins when hardware is connected
+// IMPORTANT: PS0 and PS1 must be BOTH HIGH (3.3V) for SPI mode. If both are GND, chip stays in I2C mode!
 static spi_config_t bno085_spi_cfg = {
-    .spi_host = 3,      // SPI3 (SPI2 used by SD card)
-    .cs_pin = 10,       // TODO: CS pin
-    .sclk_pin = 36,     // TODO: SCLK (SCK)
-    .mosi_pin = 35,     // TODO: MOSI (DI on BNO085)
-    .miso_pin = 37,     // TODO: MISO (SDA on BNO085)
-    .int_pin = -1,      // TODO: INT pin (data ready, active low) - use -1 if not connected
-    .rst_pin = -1       // TODO: RST pin (reset, active low) - use -1 if not connected
+    .spi_host = 2,      // SPI2 or SPI3
+    .cs_pin = 7,       // TODO: CS pin
+    .sclk_pin = 6,     // TODO: SCLK (SCK)
+    .mosi_pin = 8,     // TODO: MOSI (DI on BNO085)
+    .miso_pin = 9,     // TODO: MISO (SDA on BNO085)
+    .int_pin = 15,      // TODO: INT pin (data ready, active low) - use -1 if not connected
+    .rst_pin = 16       // TODO: RST pin (reset, active low) - use -1 if not connected
 };
 
 // SW-420 - GPIO Configuration
@@ -68,7 +69,7 @@ static adc_config_t current_adc_cfg = {
 
 // MPL3115A2 - I2C Configuration
 // TODO: Confirm ESP32-S3 I2C pins (any GPIO will work)
-static i2c_config_t mpl3115_i2c_cfg = {
+static hal_i2c_config_t mpl3115_i2c_cfg = {
     .i2c_port = 0,      // I2C_NUM_0
     .sda_pin = 0,       // TODO: Set actual SDA pin
     .scl_pin = 0,       // TODO: Set actual SCL pin
@@ -77,10 +78,10 @@ static i2c_config_t mpl3115_i2c_cfg = {
 
 // MCP9808 - I2C Configuration
 // TODO: Shares same I2C bus with MPL3115 (same SDA and SCL pins)
-static i2c_config_t mcp9808_i2c_cfg = {
+static hal_i2c_config_t mcp9808_i2c_cfg = {
     .i2c_port = 0,      // I2C_NUM_0 (shared with MPL3115)
-    .sda_pin = 0,       // TODO: Same as MPL3115
-    .scl_pin = 0,       // TODO: Same as MPL3115
+    .sda_pin = 8,       // TODO: Same as MPL3115
+    .scl_pin = 9,       // TODO: Same as MPL3115
     .device_addr = 0x18 // MCP9808 default I2C address
 };
 
@@ -88,9 +89,9 @@ static i2c_config_t mcp9808_i2c_cfg = {
 // TODO: Confirm ESP32-S3 I2S pins (BCK, WS, SD)
 static inmp441_i2s_config_t inmp441_i2s_cfg = {
     .i2s_port = 0,         // I2S_NUM_0
-    .bck_pin = 0,          // TODO: Set actual BCK GPIO
-    .ws_pin = 0,           // TODO: Set actual WS/LRCLK GPIO
-    .data_in_pin = 0,      // TODO: Set actual SD (data in) GPIO
+    .bck_pin = 15,          // TODO: Set actual BCK GPIO
+    .ws_pin = 17,           // TODO: Set actual WS/LRCLK GPIO
+    .data_in_pin = 16,      // TODO: Set actual SD (data in) GPIO
     .sample_rate_hz = 16000 // INMP441 typical; decimate to 1kHz logical rate
 };
 
@@ -122,7 +123,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 1,
         .type = SENSOR_TYPE_VIBRATION,
         .sampling_rate_hz = 1000,
-        .enabled = true,
+        .enabled = false,
         .hw_config = &vibration_gpio_cfg,
         .init = vibration_init,
         .read_sample = vibration_read_sample
@@ -162,7 +163,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 5,
         .type = SENSOR_TYPE_MICROPHONE,
         .sampling_rate_hz = 1000,
-        .enabled = false,
+        .enabled = true,
         .hw_config = &inmp441_i2s_cfg,
         .init = inmp441_init,
         .read_sample = inmp441_read_sample

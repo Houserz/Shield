@@ -44,12 +44,13 @@ typedef struct {
 } spi_config_t;
 
 // I2C configuration (for MPL3115A2 and MCP9808)
+// 注意：名称使用 hal_i2c_config_t 以避免与 ESP-IDF 自带的 i2c_config_t 冲突
 typedef struct {
     int i2c_port;
     int sda_pin;
     int scl_pin;
     uint8_t device_addr;
-} i2c_config_t;
+} hal_i2c_config_t;
 
 // ADC configuration (for ACS723 current sensor)
 typedef struct {
@@ -99,7 +100,7 @@ bool mcp9808_read_sample(SensorContext_t *ctx, float *data_out);
 bool inmp441_init(SensorContext_t *ctx);
 bool inmp441_read_sample(SensorContext_t *ctx, float *data_out);
 
-// 751-1015-ND Photodiode (ADC, 200Hz medium-rate)
+// BPW34 Photodiode (Vishay PIN, ADC, 200 Hz medium-rate)
 bool photodiode_init(SensorContext_t *ctx);
 bool photodiode_read_sample(SensorContext_t *ctx, float *data_out);
 

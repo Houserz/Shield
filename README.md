@@ -14,11 +14,13 @@
 **MCU**: ESP32-S3 (Dual-Core Xtensa LX7 @ 240MHz)
 
 **Sensors**:
-- BNO085 (9-DOF IMU, SPI, 1kHz)
-- SW-420 (Vibration, GPIO, 1kHz)
-- ACS723 (Current, ADC, 200Hz)
-- MPL3115A2 (Pressure, I2C, 50Hz)
-- MCP9808 (Temperature, I2C, 50Hz)
+- BNO085 (9-DOF IMU, SPI, 1kHz, **not working yet**)
+- SW-420 (Vibration, GPIO, 1kHz, **individually tested OK**)
+- ACS723 (Current, ADC, 200Hz, **driver implemented, not tested**)
+- MPL3115A2 (Pressure, I2C, 50Hz, **driver implemented, not tested**)
+- MCP9808 (Temperature, I2C, 50Hz, **individually tested OK**)
+- INMP441 (Microphone, I2S, effective 1kHz, **individually tested OK**)
+- Photodiode (751-1015-ND, ADC, 200Hz, **driver implemented, not tested**)
 
 **Storage**: SD Card (SDMMC 4-bit, 40MHz)
 
@@ -30,7 +32,7 @@
 │
 └── components/
     ├── sensor_hal/               # Hardware abstraction layer
-    ├── drivers/                  # Sensor drivers (5 sensors)
+    ├── drivers/                  # Sensor drivers (7 sensors)
     ├── data_types/               # Data structures & metadata
     └── sd_storage/               # SD card storage module
 ```
@@ -48,8 +50,8 @@ Each run session creates a directory with:
 
 ```
 /sdcard/RUN_XXX/
-├── fast_data.bin       # 1kHz data (IMU + Vibration)
-├── medium_data.bin     # 200Hz data (Current)
+├── fast_data.bin       # 1kHz data (IMU + Vibration + Microphone)
+├── medium_data.bin     # 200Hz data (Current + Photodiode)
 ├── slow_data.bin       # 50Hz data (Pressure + Temperature)
 ├── meta.json           # Session metadata
 └── events.log          # Event log
@@ -156,17 +158,15 @@ void sd_storage_deinit(void);
 
 ## Development Status
 
-**Current State**: Framework complete, hardware drivers are stubs
+**Current State**: Core framework and SD storage are complete. All 7 sensors are integrated into the HAL.
 
-All sensor drivers currently return stub data and need hardware-specific 
-
-### Driver Implementation Priority
-
-1. **SW-420** (Easiest - GPIO digital input)
-2. **ACS723** (Easy - ADC analog input)
-3. **MCP9808** (Medium - I2C with simple registers)
-4. **MPL3115A2** (Medium - I2C with mode configuration)
-5. **BNO085** (Hard - SPI with complex protocol)
+- **Vibration (SW-420)**: individually tested, works
+- **Microphone (INMP441)**: individually tested, works
+- **Temperature (MCP9808)**: individually tested, works
+- **IMU (BNO085)**: under debugging, not working yet
+- **Current (ACS723)**: driver implemented, not hardware-tested
+- **Pressure (MPL3115A2)**: driver implemented, not hardware-tested
+- **Photodiode (751-1015-ND)**: driver implemented, not hardware-tested
 
 ## Performance
 
@@ -205,30 +205,16 @@ Change in `components/sd_storage/include/sd_storage.h`:
 #define WRITE_BUFFER_SIZE   4096  // 4KB
 ```
 
-## Data Analysis
-
-Use the provided Python tool to parse binary data:
-
-```python
-import struct
-
-with open('/sdcard/RUN_001/fast_data.bin', 'rb') as f:
-    while True:
-        data = f.read(16)  # 16 bytes per record
-        if not data:
-            break
-        timestamp, sensor_id, _, _, _, data_value = struct.unpack('<IB3xf', data)
-        print(f"[{timestamp}ms] Sensor {sensor_id}: {data_value}")
-```
-
 ## Contributing
 
-1. Implement sensor drivers following the HAL interface
-2. Update pin configurations based on actual hardware
-3. Test thoroughly with real sensors
-4. Add error handling and recovery mechanisms
+All sensor drivers are implemented. Current priorities:
+
+1. **Hardware testing**: Test remaining sensors (Current, Pressure, Photodiode) with real hardware
+2. **Multi-sensor integration**: Verify concurrent operation of multiple sensors
+3. **SD card data loss**: Investigate and fix packet loss during SD card writes
+4. **Error handling**: Add recovery mechanisms for sensor failures and SD write errors
 
 ---
 
-**Status**: Framework Complete, Hardware Drivers Pending
+**Status**: Framework complete; vibration, microphone, and temperature drivers verified individually; IMU not working yet; other drivers pending hardware test.
 

@@ -116,7 +116,7 @@ bool sd_storage_init(void) {
     ESP_LOGI(TAG, "Initializing SD card");
 
     /* Give SD card time to power up after boot (some adapters need this) */
-    vTaskDelay(pdMS_TO_TICKS(200));
+    vTaskDelay(pdMS_TO_TICKS(500));
 
     esp_err_t ret;
 
