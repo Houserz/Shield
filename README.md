@@ -14,13 +14,13 @@
 **MCU**: ESP32-S3 (Dual-Core Xtensa LX7 @ 240MHz)
 
 **Sensors**:
-- BNO085 (9-DOF IMU, SPI, 1kHz, **not working yet**)
+- BNO085 (9-DOF IMU, SPI, 1kHz, **individually tested OK**)
 - SW-420 (Vibration, GPIO, 1kHz, **individually tested OK**)
-- ACS723 (Current, ADC, 200Hz, **driver implemented, not tested**)
-- MPL3115A2 (Pressure, I2C, 50Hz, **driver implemented, not tested**)
+- ACS723 (Current, ADC, 200Hz, **individually tested OK**)
+- MPL3115A2 (Pressure, I2C, 50Hz, **individually tested OK**)
 - MCP9808 (Temperature, I2C, 50Hz, **individually tested OK**)
 - INMP441 (Microphone, I2S, effective 1kHz, **individually tested OK**)
-- Photodiode (751-1015-ND, ADC, 200Hz, **driver implemented, not tested**)
+- BPW34 (Photodiode, ADC, 200Hz, **driver implemented, not yet tested**)
 
 **Storage**: SD Card (SDMMC 4-bit, 40MHz)
 
@@ -156,18 +156,6 @@ bool sd_close_run_session(void);
 void sd_storage_deinit(void);
 ```
 
-## Development Status
-
-**Current State**: Core framework and SD storage are complete. All 7 sensors are integrated into the HAL.
-
-- **Vibration (SW-420)**: individually tested, works
-- **Microphone (INMP441)**: individually tested, works
-- **Temperature (MCP9808)**: individually tested, works
-- **IMU (BNO085)**: under debugging, not working yet
-- **Current (ACS723)**: driver implemented, not hardware-tested
-- **Pressure (MPL3115A2)**: driver implemented, not hardware-tested
-- **Photodiode (751-1015-ND)**: driver implemented, not hardware-tested
-
 ## Performance
 
 | Metric | Value |
@@ -205,16 +193,22 @@ Change in `components/sd_storage/include/sd_storage.h`:
 #define WRITE_BUFFER_SIZE   4096  // 4KB
 ```
 
+## Development Status
+
+**Current State**: Core framework and SD storage are complete. All 7 sensors are integrated into the HAL. All sensors except the photodiode have been individually tested and work.
+**Pin configuration**: The current pin assignments are non-conflicting. Some pins have been adjusted and are not yet verified on hardware; confirm against your PCB before production use.
+
+**Known Issues**:
+- **Packet loss**: When multiple sensors run concurrently, packet loss may occur; investigation and mitigation ongoing.
+- **IMU data structure**: IMU pipeline currently provides acceleration only; extend or refactor the data structure as needed for future use (e.g. gyroscope, magnetometer, quaternion).
+
+
 ## Contributing
 
 All sensor drivers are implemented. Current priorities:
 
-1. **Hardware testing**: Test remaining sensors (Current, Pressure, Photodiode) with real hardware
-2. **Multi-sensor integration**: Verify concurrent operation of multiple sensors
-3. **SD card data loss**: Investigate and fix packet loss during SD card writes
+1. **Hardware testing**: Test photodiode with real hardware (all other sensors already individually tested)
+2. **Packet loss**: Investigate and fix packet loss when multiple sensors run simultaneously
+3. **IMU data structure**: Update BNO085 data structure based on actual data requirements (e.g. add gyro, quaternion)
 4. **Error handling**: Add recovery mechanisms for sensor failures and SD write errors
-
----
-
-**Status**: Framework complete; vibration, microphone, and temperature drivers verified individually; IMU not working yet; other drivers pending hardware test.
 

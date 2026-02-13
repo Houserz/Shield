@@ -62,8 +62,23 @@ bool current_init(SensorContext_t *ctx) {
         return false;
     }
 
-    ESP_LOGI(TAG, "ACS723 init OK: ch=%d, GPIO=%d, 400mV/A ±5A",
-             adc_cfg->adc_channel, adc_cfg->gpio_pin);
+    // Power check: ACS723 powered and at zero current should output ~1.5V at ADC.
+    // If sensor has no power, VIOUT ≈ 0V, ADC raw ≈ 0. Fail init if voltage < 0.3V.
+    int adc_raw = 0;
+    if (adc_oneshot_read(s_adc1_handle, chan, &adc_raw) != ESP_OK) {
+        ESP_LOGE(TAG, "adc_oneshot_read failed during power check");
+        return false;
+    }
+    float voltage = (float)adc_raw * 3.3f / 4095.0f;
+    const float MIN_POWER_VOLTAGE = 0.3f;  // Below this: no power or wrong wiring
+    if (voltage < MIN_POWER_VOLTAGE) {
+        ESP_LOGE(TAG, "ACS723 no power or wrong wiring: ADC raw=%d voltage=%.2fV (expect ~1.5V at zero current)",
+                 adc_raw, voltage);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "ACS723 init OK: ch=%d, GPIO=%d, 400mV/A ±5A (V=%.2fV)",
+             adc_cfg->adc_channel, adc_cfg->gpio_pin, voltage);
     return true;
 }
 

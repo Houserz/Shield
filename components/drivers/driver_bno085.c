@@ -21,6 +21,7 @@ static const char *TAG = "bno085";
 
 // ==================== SHTP Protocol Constants ====================
 #define SHTP_HEADER_LEN        4
+#define SHTP_MAX_PACKET        512   /* BNO085 SHTP packets can exceed 256 bytes */
 #define SHTP_CHANNEL_EXE       1
 #define SHTP_CHANNEL_CONTROL   2
 #define SHTP_CHANNEL_REPORTS   3
@@ -76,13 +77,30 @@ static bool bno085_spi_transfer(const uint8_t *tx_buf, uint8_t *rx_buf, size_t l
 }
 
 // ==================== Read SHTP packet (caller provides buffer) ====================
+// FIX: Read entire packet in a SINGLE SPI transaction. The old code split header/payload
+// into two SPI transactions, causing CS to toggle mid-packet. BNO085 interprets each CS
+// assertion as a separate SHTP exchange, so the split read consumed TWO packets per call
+// (evidence: sequence numbers incremented by 2 instead of 1 in debug logs).
 static int bno085_read_packet(uint8_t *buf, size_t buf_size) {
     if (buf_size < SHTP_HEADER_LEN) return -1;
 
-    uint8_t tx_header[SHTP_HEADER_LEN];
-    memset(tx_header, 0xFF, sizeof(tx_header));
+    // Read the full max packet in ONE SPI transaction (CS stays LOW throughout)
+    // TX header strategy depends on init vs runtime phase:
+    //   Init phase  (initialized=false): send [04 00 00 00] valid SHTP heartbeat.
+    //     BNO085 needs valid host headers to advance its SHTP state machine during
+    //     initialization. Sending all-zeros stalls the state machine (confirmed by logs).
+    //   Runtime phase (initialized=true): send [00 00 00 00] (no host data).
+    //     We only read when INT=LOW (data ready), so BNO085 is already active.
+    //     Sending [04 00 00 00] at runtime triggers ch=0 acknowledgment responses,
+    //     which re-assert INT and create an infinite read loop (confirmed by logs).
+    size_t read_len = (buf_size < SHTP_MAX_PACKET) ? buf_size : SHTP_MAX_PACKET;
+    static uint8_t tx_dummy[SHTP_MAX_PACKET];
+    memset(tx_dummy, 0x00, read_len);
+    if (!s_bno085.initialized) {
+        tx_dummy[0] = 0x04;  // Init phase: valid empty SHTP header to drive state machine
+    }
 
-    if (!bno085_spi_transfer(tx_header, buf, SHTP_HEADER_LEN)) {
+    if (!bno085_spi_transfer(tx_dummy, buf, read_len)) {
         return -1;
     }
 
@@ -91,21 +109,12 @@ static int bno085_read_packet(uint8_t *buf, size_t buf_size) {
         return -1;
     }
 
-    uint16_t payload_len = pkt_len - SHTP_HEADER_LEN;
-    if (payload_len > 0) {
-        #define MAX_PAYLOAD 256
-        uint8_t tx_payload[MAX_PAYLOAD];
-        size_t to_read = (payload_len < MAX_PAYLOAD) ? (size_t)payload_len : MAX_PAYLOAD;
-        memset(tx_payload, 0xFF, to_read);
-        if (!bno085_spi_transfer(tx_payload, buf + SHTP_HEADER_LEN, to_read)) {
-            return -1;
-        }
-    }
-
     return (int)pkt_len;
 }
 
 // ==================== Send SHTP packet ====================
+// Use actual packet size for the SPI transaction. Since we always drain pending
+// data before sending (INT is HIGH), there's no simultaneous BNO085 data to cover.
 static bool bno085_send_packet(uint8_t channel, uint8_t *seq, const uint8_t *payload,
                                uint16_t payload_len) {
     uint8_t pkt[64];
@@ -202,21 +211,21 @@ bool bno085_init(SensorContext_t *ctx) {
         gpio_config(&io_int);
     }
 
-    // Hardware reset
-    bno085_hw_reset(cfg->rst_pin);
-
-    // SPI bus init
+    // SPI bus init BEFORE hardware reset: BNO085's SPI interface needs properly
+    // driven SPI lines (CS, SCLK, MOSI) during boot. If these pins are floating
+    // (uninitialized) when BNO085 boots, its SPI slave may enter an undefined state,
+    // causing all subsequent SPI reads to return invalid data.
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = cfg->mosi_pin,
         .miso_io_num = cfg->miso_pin,
         .sclk_io_num = cfg->sclk_pin,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = 512,
+        .max_transfer_sz = SHTP_MAX_PACKET,
     };
 
     spi_host_device_t host = (spi_host_device_t)cfg->spi_host;
-    if (spi_bus_initialize(host, &bus_cfg, SPI_DMA_DISABLED) != ESP_OK) {
+    if (spi_bus_initialize(host, &bus_cfg, SPI_DMA_CH_AUTO) != ESP_OK) {
         ESP_LOGE(TAG, "BNO085: SPI bus init failed");
         return false;
     }
@@ -239,27 +248,159 @@ bool bno085_init(SensorContext_t *ctx) {
     s_bno085.seq_exe = 0;
     s_bno085.last_accel_magnitude = 0.0f;
 
-    // Soft reset via EXE channel
-    uint8_t reset_cmd = 1;
-    bno085_send_packet(SHTP_CHANNEL_EXE, &s_bno085.seq_exe, &reset_cmd, 1);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    // Retry loop: BNO085 boot timing is variable; production libraries retry up to 3 times.
+    // Each attempt does a hardware reset + drain + product ID request.
+    // No soft reset needed - hardware reset is sufficient and more reliable.
+    uint8_t rx_buf[SHTP_MAX_PACKET];
+    uint8_t saved_pid_buf[SHTP_MAX_PACKET];
+    int n = -1;
+    bool found_product_id = false;
+    const int MAX_INIT_ATTEMPTS = 3;
 
-    // Request product ID (verify communication)
-    uint8_t prod_req[2] = { SHTP_REPORT_PRODUCT_ID_REQUEST, 0 };
-    bno085_send_packet(SHTP_CHANNEL_CONTROL, &s_bno085.seq_control, prod_req, 2);
+    for (int attempt = 0; attempt < MAX_INIT_ATTEMPTS; attempt++) {
+        found_product_id = false;
+        n = -1;
+        s_bno085.seq_control = 0;
+        s_bno085.seq_exe = 0;
 
-    vTaskDelay(pdMS_TO_TICKS(100));
+        // Hardware reset on every attempt (SPI bus already configured, so BNO085
+        // boots with properly driven SPI lines)
+        if (attempt > 0) {
+            ESP_LOGW(TAG, "BNO085: Init retry %d/%d", attempt + 1, MAX_INIT_ATTEMPTS);
+        }
+        bno085_hw_reset(cfg->rst_pin);
 
-    uint8_t rx_buf[128];
-    int n = bno085_read_packet(rx_buf, sizeof(rx_buf));
-    if (n < (int)(SHTP_HEADER_LEN + 16)) {
-        ESP_LOGW(TAG, "BNO085: No product ID response (n=%d), continuing anyway", n);
-    } else if (rx_buf[SHTP_HEADER_LEN] == SHTP_REPORT_PRODUCT_ID_RESPONSE) {
-        uint32_t part_no = (uint32_t)rx_buf[SHTP_HEADER_LEN + 4] |
-                           ((uint32_t)rx_buf[SHTP_HEADER_LEN + 5] << 8) |
-                           ((uint32_t)rx_buf[SHTP_HEADER_LEN + 6] << 16) |
-                           ((uint32_t)rx_buf[SHTP_HEADER_LEN + 7] << 24);
+        // Soft reset via EXE channel. This triggers a clean re-initialization that
+        // produces a limited set of init packets (advertisement, reset, init response).
+        // Without the soft reset, hardware-reset-only produces a massive FRS data dump
+        // (80+ packets) that buries the Product ID response (confirmed by logs).
+        uint8_t reset_cmd = 1;
+        bno085_send_packet(SHTP_CHANNEL_EXE, &s_bno085.seq_exe, &reset_cmd, 1);
+
+        // Wait for BNO085 to complete soft reset and assert INT (data ready).
+        // Boot time is typically ~300ms but can vary. Wait up to 800ms.
+        bool int_ready = bno085_wait_int(cfg->int_pin, 800);
+
+        if (!int_ready) {
+            continue;
+        }
+
+        // Simplified drain + Product ID request loop.
+        // Key insight: BNO085 needs CONTINUOUS SPI clock activity to advance its
+        // state machine. We must keep doing SPI reads even when INT is HIGH.
+        // The [04 00 00 00] heartbeat in read_packet (init phase) provides this.
+        //
+        // Strategy:
+        //   1. Always do a read on every iteration (provides clock cycles)
+        //   2. After first valid packet, embed Product ID request in next read's TX buffer
+        //      (full 512-byte transaction ensures reliable delivery even when BNO085
+        //      has pending data - a separate 6-byte send fails intermittently)
+        //   3. Keep reading for response (don't stop when INT goes HIGH)
+        //   4. Exit only when: response found, or max iterations reached
+        int drain_count = 0;
+        bool pid_request_sent = false;
+        int idle_count = 0;
+
+        for (int drain_i = 0; drain_i < 80; drain_i++) {
+            int pkt_n;
+
+            // Embed Product ID request in the next read transaction (after first valid pkt)
+            if (!pid_request_sent && drain_count >= 1) {
+                // Build a 512-byte TX buffer with the Product ID request as SHTP packet
+                // + zero padding. BNO085 receives our request AND outputs its pending
+                // data in the same 512-byte SPI transaction. This is reliable because
+                // the full transaction gives both parties enough clock cycles.
+                static uint8_t tx_cmd[SHTP_MAX_PACKET];
+                memset(tx_cmd, 0x00, SHTP_MAX_PACKET);
+                uint8_t prod_payload[2] = { SHTP_REPORT_PRODUCT_ID_REQUEST, 0 };
+                shtp_build_packet(SHTP_CHANNEL_CONTROL, s_bno085.seq_control,
+                                  prod_payload, 2, tx_cmd);
+                s_bno085.seq_control = (s_bno085.seq_control + 1) & 0xFF;
+
+                bno085_spi_transfer(tx_cmd, rx_buf, SHTP_MAX_PACKET);
+                pid_request_sent = true;
+
+                // Parse the simultaneously received BNO085 data
+                uint16_t rx_len = (uint16_t)rx_buf[0] | ((uint16_t)(rx_buf[1] & 0x7F) << 8);
+                pkt_n = (rx_len >= SHTP_HEADER_LEN && rx_len <= SHTP_MAX_PACKET)
+                        ? (int)rx_len : -1;
+
+            } else {
+                // Normal read with heartbeat (init phase sends [04 00 00 00])
+                pkt_n = bno085_read_packet(rx_buf, sizeof(rx_buf));
+            }
+
+            if (pkt_n > 0) {
+                idle_count = 0;
+                drain_count++;
+                uint8_t pkt_ch = rx_buf[2];
+
+                // Check for Product ID Response
+                if (pkt_ch == SHTP_CHANNEL_CONTROL && pkt_n >= (int)(SHTP_HEADER_LEN + 2)
+                    && rx_buf[SHTP_HEADER_LEN] == SHTP_REPORT_PRODUCT_ID_RESPONSE) {
+                    found_product_id = true;
+                    n = pkt_n;
+                    memcpy(saved_pid_buf, rx_buf, pkt_n);
+                }
+            } else {
+                idle_count++;
+            }
+
+            // Exit conditions
+            if (found_product_id && idle_count >= 3) {
+                break;
+            }
+            if (pid_request_sent && idle_count >= 15) {
+                break;
+            }
+            if (!pid_request_sent && idle_count >= 30) {
+                break;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+
+        if (found_product_id && n >= (int)(SHTP_HEADER_LEN + 2)) {
+            break;  // Success!
+        }
+    }
+
+    if (!found_product_id || n < (int)(SHTP_HEADER_LEN + 2)) {
+        ESP_LOGE(TAG, "BNO085: No product ID after %d attempts - init FAILED",
+                 MAX_INIT_ATTEMPTS);
+        spi_bus_remove_device(s_bno085.spi_handle);
+        spi_bus_free(host);
+        return false;
+    }
+
+    // Parse and log product ID (use saved_pid_buf since rx_buf may have been overwritten by drain)
+    if (n >= (int)(SHTP_HEADER_LEN + 8)) {
+        uint32_t part_no = (uint32_t)saved_pid_buf[SHTP_HEADER_LEN + 4] |
+                           ((uint32_t)saved_pid_buf[SHTP_HEADER_LEN + 5] << 8) |
+                           ((uint32_t)saved_pid_buf[SHTP_HEADER_LEN + 6] << 16) |
+                           ((uint32_t)saved_pid_buf[SHTP_HEADER_LEN + 7] << 24);
         ESP_LOGI(TAG, "BNO085: Product ID 0x%08"PRIx32, part_no);
+    } else {
+        ESP_LOGI(TAG, "BNO085: Product ID response received (short, n=%d)", n);
+    }
+
+    // Drain remaining FRS/initialization data before enabling reports.
+    // The BNO085 sends many ch=0 FRS records after reset; they must be consumed first.
+    int frs_count = 0;
+    for (int frs_i = 0; frs_i < 200; frs_i++) {
+        if (cfg->int_pin >= 0 && gpio_get_level(cfg->int_pin) != 0) {
+            // INT HIGH for this check - wait a bit and re-check to confirm truly idle
+            vTaskDelay(pdMS_TO_TICKS(50));
+            if (cfg->int_pin >= 0 && gpio_get_level(cfg->int_pin) != 0) {
+                break;  // INT stayed HIGH for 50ms, BNO085 is truly idle
+            }
+        }
+        int pkt_n = bno085_read_packet(rx_buf, sizeof(rx_buf));
+        if (pkt_n <= 0) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        frs_count++;
     }
 
     // Enable accelerometer report @ 1kHz
@@ -286,7 +427,7 @@ bool bno085_read_sample(SensorContext_t *ctx, float *data_out) {
     // Wait for data ready (INT pin or short delay)
     bno085_wait_int(cfg->int_pin, 20);
 
-    uint8_t rx_buf[128];
+    uint8_t rx_buf[SHTP_MAX_PACKET];
     int n = bno085_read_packet(rx_buf, sizeof(rx_buf));
     if (n < SHTP_HEADER_LEN) {
         *data_out = s_bno085.last_accel_magnitude;  // Return last valid

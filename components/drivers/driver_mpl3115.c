@@ -187,8 +187,9 @@ bool mpl3115_read_sample(SensorContext_t *ctx, float *data_out) {
     i2c_port_t port = (i2c_port_t)cfg->i2c_port;
     uint8_t addr = cfg->device_addr;
 
-    // Optional: wait for pressure data ready (PDR) with timeout; 128 OSR ~512 ms per sample
-    const int max_wait_ms = 600;
+    // Wait for pressure data ready (PDR). Datasheet Table 6: first conversion from STANDBY->ACTIVE
+    // can take up to 1000 ms at OSR=128; subsequent conversions ~512 ms. Use 1500 ms timeout.
+    const int max_wait_ms = 1500;
     int waited = 0;
     uint8_t status = 0;
     while (waited < max_wait_ms) {
@@ -219,6 +220,10 @@ bool mpl3115_read_sample(SensorContext_t *ctx, float *data_out) {
     uint32_t raw = ((uint32_t)p_buf[0] << 12) | ((uint32_t)p_buf[1] << 4) | (p_buf[2] >> 4);
     float pa = (float)raw * MPL3115_PA_PER_COUNT;
     *data_out = pa / 1000.0f;  // kPa
+
+    // Per datasheet Figure 7 (polling): after read, "Set Active" again to trigger next conversion.
+    uint8_t ctrl = (MPL3115_OSR_128 << MPL3115_CTRL_OSR_SHIFT) | MPL3115_CTRL_SBYB;
+    (void)mpl3115_write_reg(port, addr, MPL3115_REG_CTRL_REG1, ctrl);
 
     return true;
 }

@@ -55,51 +55,52 @@ static spi_config_t bno085_spi_cfg = {
 };
 
 // SW-420 - GPIO Configuration
-// TODO: Confirm ESP32-S3 GPIO pin
+// GPIO10: digital input, no conflict with ADC or other peripherals
 static vibration_gpio_config_t vibration_gpio_cfg = {
-    .gpio_pin = 1       // TODO: Set actual GPIO pin (any GPIO supporting input)
+    .gpio_pin = 10
 };
 
 // ACS723 - ADC Configuration
-// TODO: Confirm ESP32-S3 ADC pin (ADC1: GPIO1-10, ADC2 not recommended when using WiFi)
+// ADC1_CH0 = GPIO1. ACS723 output (5V supply) needs a voltage divider (e.g. 2:3)
+// to bring max output below 3.3V before connecting to this pin.
 static adc_config_t current_adc_cfg = {
-    .adc_channel = 0,   // TODO: Set actual ADC channel
-    .gpio_pin = 0       // TODO: Set corresponding GPIO pin (e.g., GPIO1 corresponds to ADC1_CH0)
+    .adc_channel = 0,   // ADC1_CH0
+    .gpio_pin = 1       // GPIO1
 };
 
 // MPL3115A2 - I2C Configuration
-// TODO: Confirm ESP32-S3 I2C pins (any GPIO will work)
+// I2C0 bus shared with MCP9808. Use 4.7kΩ external pull-ups on SDA/SCL.
 static hal_i2c_config_t mpl3115_i2c_cfg = {
     .i2c_port = 0,      // I2C_NUM_0
-    .sda_pin = 0,       // TODO: Set actual SDA pin
-    .scl_pin = 0,       // TODO: Set actual SCL pin
+    .sda_pin = 3,       // GPIO3
+    .scl_pin = 4,       // GPIO4
     .device_addr = 0x60 // MPL3115A2 default I2C address
 };
 
 // MCP9808 - I2C Configuration
-// TODO: Shares same I2C bus with MPL3115 (same SDA and SCL pins)
+// Shares same I2C0 bus with MPL3115 (same SDA=3, SCL=4 pins)
 static hal_i2c_config_t mcp9808_i2c_cfg = {
     .i2c_port = 0,      // I2C_NUM_0 (shared with MPL3115)
-    .sda_pin = 8,       // TODO: Same as MPL3115
-    .scl_pin = 9,       // TODO: Same as MPL3115
+    .sda_pin = 3,       // GPIO3 (same as MPL3115)
+    .scl_pin = 4,       // GPIO4 (same as MPL3115)
     .device_addr = 0x18 // MCP9808 default I2C address
 };
 
 // INMP441 - I2S Configuration (high sample rate)
-// TODO: Confirm ESP32-S3 I2S pins (BCK, WS, SD)
+// BCK/WS/SD use GPIO17/18/21 to avoid conflict with BNO085 INT=15 and RST=16
 static inmp441_i2s_config_t inmp441_i2s_cfg = {
     .i2s_port = 0,         // I2S_NUM_0
-    .bck_pin = 15,          // TODO: Set actual BCK GPIO
-    .ws_pin = 17,           // TODO: Set actual WS/LRCLK GPIO
-    .data_in_pin = 16,      // TODO: Set actual SD (data in) GPIO
+    .bck_pin = 17,          // GPIO17 (bit clock)
+    .ws_pin = 18,           // GPIO18 (word select / LRCLK)
+    .data_in_pin = 21,      // GPIO21 (data input)
     .sample_rate_hz = 16000 // INMP441 typical; decimate to 1kHz logical rate
 };
 
 // 751-1015-ND Photodiode - ADC Configuration (medium sample rate)
-// TODO: Confirm ESP32-S3 ADC pin (ADC1: GPIO1-10)
+// ADC1_CH1 = GPIO2. Connect photodiode TIA/load-resistor output to this pin.
 static adc_config_t photodiode_adc_cfg = {
-    .adc_channel = 1,   // TODO: Set actual ADC channel (use different from current)
-    .gpio_pin = 0       // TODO: Set corresponding GPIO (e.g. GPIO2 for ADC1_CH1)
+    .adc_channel = 1,   // ADC1_CH1
+    .gpio_pin = 2       // GPIO2
 };
 
 // ==================== Sensor Array Definition ====================
@@ -133,7 +134,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 2,
         .type = SENSOR_TYPE_CURRENT,
         .sampling_rate_hz = 200,
-        .enabled = false,
+        .enabled = true,
         .hw_config = &current_adc_cfg,
         .init = current_init,
         .read_sample = current_read_sample
@@ -143,7 +144,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 3,
         .type = SENSOR_TYPE_PRESSURE,
         .sampling_rate_hz = 50,
-        .enabled = false,
+        .enabled = true,
         .hw_config = &mpl3115_i2c_cfg,
         .init = mpl3115_init,
         .read_sample = mpl3115_read_sample
@@ -163,7 +164,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 5,
         .type = SENSOR_TYPE_MICROPHONE,
         .sampling_rate_hz = 1000,
-        .enabled = true,
+        .enabled = false,
         .hw_config = &inmp441_i2s_cfg,
         .init = inmp441_init,
         .read_sample = inmp441_read_sample
