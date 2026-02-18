@@ -57,7 +57,7 @@ static spi_config_t bno085_spi_cfg = {
 // SW-420 - GPIO Configuration
 // GPIO10: digital input, no conflict with ADC or other peripherals
 static vibration_gpio_config_t vibration_gpio_cfg = {
-    .gpio_pin = 10
+    .gpio_pin = 16
 };
 
 // ACS723 - ADC Configuration
@@ -72,8 +72,8 @@ static adc_config_t current_adc_cfg = {
 // I2C0 bus shared with MCP9808. Use 4.7kΩ external pull-ups on SDA/SCL.
 static hal_i2c_config_t mpl3115_i2c_cfg = {
     .i2c_port = 0,      // I2C_NUM_0
-    .sda_pin = 3,       // GPIO3
-    .scl_pin = 4,       // GPIO4
+    .sda_pin = 17,       // GPIO3
+    .scl_pin = 18,       // GPIO4
     .device_addr = 0x60 // MPL3115A2 default I2C address
 };
 
@@ -81,8 +81,8 @@ static hal_i2c_config_t mpl3115_i2c_cfg = {
 // Shares same I2C0 bus with MPL3115 (same SDA=3, SCL=4 pins)
 static hal_i2c_config_t mcp9808_i2c_cfg = {
     .i2c_port = 0,      // I2C_NUM_0 (shared with MPL3115)
-    .sda_pin = 3,       // GPIO3 (same as MPL3115)
-    .scl_pin = 4,       // GPIO4 (same as MPL3115)
+    .sda_pin = 17,       // GPIO3 (same as MPL3115)
+    .scl_pin = 18,       // GPIO4 (same as MPL3115)
     .device_addr = 0x18 // MCP9808 default I2C address
 };
 
@@ -90,8 +90,8 @@ static hal_i2c_config_t mcp9808_i2c_cfg = {
 // BCK/WS/SD use GPIO17/18/21 to avoid conflict with BNO085 INT=15 and RST=16
 static inmp441_i2s_config_t inmp441_i2s_cfg = {
     .i2s_port = 0,         // I2S_NUM_0
-    .bck_pin = 17,          // GPIO17 (bit clock)
-    .ws_pin = 18,           // GPIO18 (word select / LRCLK)
+    .bck_pin = 12,          // GPIO17 (bit clock)
+    .ws_pin = 20,           // GPIO18 (word select / LRCLK)
     .data_in_pin = 21,      // GPIO21 (data input)
     .sample_rate_hz = 16000 // INMP441 typical; decimate to 1kHz logical rate
 };
@@ -124,7 +124,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 1,
         .type = SENSOR_TYPE_VIBRATION,
         .sampling_rate_hz = 1000,
-        .enabled = false,
+        .enabled = true,
         .hw_config = &vibration_gpio_cfg,
         .init = vibration_init,
         .read_sample = vibration_read_sample
@@ -154,7 +154,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 4,
         .type = SENSOR_TYPE_TEMP,
         .sampling_rate_hz = 50,
-        .enabled = false,
+        .enabled = true,
         .hw_config = &mcp9808_i2c_cfg,
         .init = mcp9808_init,
         .read_sample = mcp9808_read_sample
@@ -164,7 +164,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 5,
         .type = SENSOR_TYPE_MICROPHONE,
         .sampling_rate_hz = 1000,
-        .enabled = false,
+        .enabled = true,
         .hw_config = &inmp441_i2s_cfg,
         .init = inmp441_init,
         .read_sample = inmp441_read_sample
@@ -174,7 +174,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 6,
         .type = SENSOR_TYPE_PHOTODIODE,
         .sampling_rate_hz = 200,
-        .enabled = false,
+        .enabled = true,
         .hw_config = &photodiode_adc_cfg,
         .init = photodiode_init,
         .read_sample = photodiode_read_sample

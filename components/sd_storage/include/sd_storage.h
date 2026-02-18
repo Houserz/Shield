@@ -17,10 +17,10 @@
 // ==================== Configuration Parameters ====================
 
 // SD card SPI pin configuration
-#define SD_PIN_MISO     37
-#define SD_PIN_MOSI     35
-#define SD_PIN_SCK      36
-#define SD_PIN_CS       5
+#define SD_PIN_MISO     14
+#define SD_PIN_MOSI     13
+#define SD_PIN_SCK      12
+#define SD_PIN_CS       15
 
 // SD card mount point
 #define SD_MOUNT_POINT  "/sdcard"
