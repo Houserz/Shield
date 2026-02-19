@@ -143,7 +143,7 @@ bool mpl3115_init(SensorContext_t *ctx) {
     ESP_LOGI(TAG, "MPL3115A2 detected (WHO_AM_I=0x%02X)", whoami);
 
     // 3. setModeStandby() then configure CTRL_REG1 (barometer, OSR=128)
-    uint8_t ctrl = (MPL3115_OSR_128 << MPL3115_CTRL_OSR_SHIFT);  // ALT=0, SBYB=0
+    uint8_t ctrl = (MPL3115_OSR_128 << MPL3115_CTRL_OSR_SHIFT);
     err = mpl3115_write_reg(port, addr, MPL3115_REG_CTRL_REG1, ctrl);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set CTRL_REG1 standby (err=%d)", err);

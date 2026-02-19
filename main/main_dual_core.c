@@ -482,7 +482,7 @@ void app_main(void) {
     
     // TODO: Modify run duration or change to button-triggered stop based on requirements
     // Current: Automatically stops after 30 seconds (for testing)
-    vTaskDelay(pdMS_TO_TICKS(30000));
+    vTaskDelay(pdMS_TO_TICKS(60000));
 
     // Stop acquisition
     system_state = DAQ_STATE_STOPPING;

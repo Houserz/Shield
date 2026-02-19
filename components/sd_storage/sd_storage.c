@@ -116,7 +116,7 @@ bool sd_storage_init(void) {
     ESP_LOGI(TAG, "Initializing SD card");
 
     /* Give SD card time to power up after boot (some adapters need this) */
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(2000));
 
     esp_err_t ret;
 
@@ -131,7 +131,7 @@ bool sd_storage_init(void) {
     };
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.max_freq_khz = SDMMC_FREQ_PROBING;
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
 
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = SD_PIN_MOSI,

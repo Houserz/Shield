@@ -65,10 +65,12 @@ bool metadata_create(const char *filepath, const char *run_id) {
     fprintf(file, "  \"sensors\": {\n");
     fprintf(file, "    \"fast\": [\n");
     fprintf(file, "      {\"id\": 0, \"name\": \"BNO085_IMU\", \"type\": \"IMU\", \"rate\": 1000, \"unit\": \"m/s^2\"},\n");
-    fprintf(file, "      {\"id\": 1, \"name\": \"SW420_Vibration\", \"type\": \"VIBRATION\", \"rate\": 1000, \"unit\": \"binary\"}\n");
+    fprintf(file, "      {\"id\": 1, \"name\": \"SW420_Vibration\", \"type\": \"VIBRATION\", \"rate\": 1000, \"unit\": \"binary\"},\n");
+    fprintf(file, "      {\"id\": 5, \"name\": \"INMP441_Microphone\", \"type\": \"MICROPHONE\", \"rate\": 1000, \"unit\": \"dBFS\"}\n");
     fprintf(file, "    ],\n");
     fprintf(file, "    \"medium\": [\n");
-    fprintf(file, "      {\"id\": 2, \"name\": \"ACS723_Current\", \"type\": \"CURRENT\", \"rate\": 200, \"unit\": \"A\"}\n");
+    fprintf(file, "      {\"id\": 2, \"name\": \"ACS723_Current\", \"type\": \"CURRENT\", \"rate\": 200, \"unit\": \"A\"},\n");
+    fprintf(file, "      {\"id\": 6, \"name\": \"751-1015-ND_Photodiode\", \"type\": \"PHOTODIODE\", \"rate\": 200, \"unit\": \"V\"}\n");
     fprintf(file, "    ],\n");
     fprintf(file, "    \"slow\": [\n");
     fprintf(file, "      {\"id\": 3, \"name\": \"MPL3115_Pressure\", \"type\": \"PRESSURE\", \"rate\": 50, \"unit\": \"kPa\"},\n");
