@@ -26,7 +26,7 @@ static const char *TAG = "acs723";
 #define SENSITIVITY_MV_PER_A    400.0f   // 400mV/A
 #define VOUT_QUIESCENT          1.5f     // ADC voltage at zero current (V), 5V×0.5×0.6
 
-static adc_oneshot_unit_handle_t s_adc1_handle = NULL;
+adc_oneshot_unit_handle_t s_adc1_handle = NULL;
 
 bool current_init(SensorContext_t *ctx) {
     if (ctx == NULL || ctx->hw_config == NULL) {

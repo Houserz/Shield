@@ -26,6 +26,7 @@
 #include "sensor_hal.h"
 #include "data_types.h"
 #include "sd_storage.h"
+#include "driver/i2c.h"
 
 static const char *TAG = "SHIELD";
 
@@ -90,9 +91,9 @@ static hal_i2c_config_t mcp9808_i2c_cfg = {
 // BCK/WS/SD use GPIO17/18/21 to avoid conflict with BNO085 INT=15 and RST=16
 static inmp441_i2s_config_t inmp441_i2s_cfg = {
     .i2s_port = 0,         // I2S_NUM_0
-    .bck_pin = 12,          // GPIO17 (bit clock)
-    .ws_pin = 20,           // GPIO18 (word select / LRCLK)
-    .data_in_pin = 21,      // GPIO21 (data input)
+    .bck_pin = 45,          // GPIO17 (bit clock)
+    .ws_pin = 47,           // GPIO18 (word select / LRCLK)
+    .data_in_pin = 48,      // GPIO21 (data input)
     .sample_rate_hz = 16000 // INMP441 typical; decimate to 1kHz logical rate
 };
 
@@ -368,6 +369,22 @@ void vTaskSDWriter(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
+void i2c_scan(i2c_port_t port) {
+    ESP_LOGI("i2c_scan", "Scanning I2C port %d...", port);
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+        i2c_master_stop(cmd);
+        esp_err_t err = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
+        i2c_cmd_link_delete(cmd);
+        if (err == ESP_OK) {
+            ESP_LOGI("i2c_scan", "  Found device at 0x%02X", addr);
+        }
+    }
+    ESP_LOGI("i2c_scan", "Scan complete");
+}
+
 // ==================== Main Program ====================
 
 /**
@@ -388,6 +405,22 @@ void app_main(void) {
         return;
     }
     ESP_LOGI(TAG, "SD card initialized OK");
+
+    i2c_config_t i2c_cfg = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = 17,
+        .scl_io_num = 18,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 400000,
+        .clk_flags = 0,
+    };
+    ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_0, &i2c_cfg));
+    ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0));
+    i2c_reset_tx_fifo(I2C_NUM_0);
+    i2c_reset_rx_fifo(I2C_NUM_0);
+    vTaskDelay(pdMS_TO_TICKS(100));  // give devices time to settle
+    i2c_scan(I2C_NUM_0);
 
     // Initialize all sensors
     const char *sensor_names[] = {"BNO085 IMU", "SW-420 Vibration", "ACS723 Current", "MPL3115 Pressure", "MCP9808 Temp",

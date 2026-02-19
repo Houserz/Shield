@@ -59,7 +59,7 @@
 static const char *TAG = "mpl3115";
 
 // Share I2C bus with MCP9808: only install driver once per port
-static bool s_i2c_initialized[2] = {false, false};
+// static bool s_i2c_initialized[2] = {false, false};
 
 // ==================== I2C Helpers ====================
 
@@ -102,32 +102,32 @@ bool mpl3115_init(SensorContext_t *ctx) {
         return false;
     }
 
-    if (!s_i2c_initialized[port]) {
-        i2c_config_t idf_cfg = {
-            .mode = I2C_MODE_MASTER,
-            .sda_io_num = cfg->sda_pin,
-            .scl_io_num = cfg->scl_pin,
-            .sda_pullup_en = GPIO_PULLUP_ENABLE,
-            .scl_pullup_en = GPIO_PULLUP_ENABLE,
-            .master.clk_speed = 400000,
-            .clk_flags = 0,
-        };
+    // if (!s_i2c_initialized[port]) {
+    //     i2c_config_t idf_cfg = {
+    //         .mode = I2C_MODE_MASTER,
+    //         .sda_io_num = cfg->sda_pin,
+    //         .scl_io_num = cfg->scl_pin,
+    //         .sda_pullup_en = GPIO_PULLUP_ENABLE,
+    //         .scl_pullup_en = GPIO_PULLUP_ENABLE,
+    //         .master.clk_speed = 400000,
+    //         .clk_flags = 0,
+    //     };
 
-        esp_err_t err = i2c_param_config(port, &idf_cfg);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "i2c_param_config failed: %d", err);
-            return false;
-        }
+    //     esp_err_t err = i2c_param_config(port, &idf_cfg);
+    //     if (err != ESP_OK) {
+    //         ESP_LOGE(TAG, "i2c_param_config failed: %d", err);
+    //         return false;
+    //     }
 
-        err = i2c_driver_install(port, idf_cfg.mode, 0, 0, 0);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGE(TAG, "i2c_driver_install failed: %d", err);
-            return false;
-        }
-        s_i2c_initialized[port] = true;
-        ESP_LOGI(TAG, "I2C port %d initialized (SDA=%d SCL=%d addr=0x%02X)",
-                 (int)port, cfg->sda_pin, cfg->scl_pin, addr);
-    }
+    //     err = i2c_driver_install(port, idf_cfg.mode, 0, 0, 0);
+    //     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+    //         ESP_LOGE(TAG, "i2c_driver_install failed: %d", err);
+    //         return false;
+    //     }
+    //     s_i2c_initialized[port] = true;
+    //     ESP_LOGI(TAG, "I2C port %d initialized (SDA=%d SCL=%d addr=0x%02X)",
+    //              (int)port, cfg->sda_pin, cfg->scl_pin, addr);
+    // }
 
     // 2. Detect device: WHO_AM_I = 0xC4
     uint8_t whoami = 0;
@@ -206,6 +206,7 @@ bool mpl3115_read_sample(SensorContext_t *ctx, float *data_out) {
     }
     if (!(status & MPL3115_STATUS_PDR)) {
         ESP_LOGE(TAG, "Pressure data ready timeout");
+        vTaskDelay(pdMS_TO_TICKS(50)); // brief delay before next read attempt to avoid bus congestion
         return false;
     }
 

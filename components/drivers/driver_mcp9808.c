@@ -47,7 +47,7 @@ static const char *TAG = "mcp9808";
 
 // To share I2C bus with MPL3115, only configure and install I2C driver on first initialization
 // Support for up to I2C_NUM_0 / I2C_NUM_1, indexed by i2c_port
-static bool s_i2c_initialized[2] = {false, false};
+// static bool s_i2c_initialized[2] = {false, false};
 
 // ==================== I2C Utility Functions ====================
 
@@ -117,34 +117,34 @@ bool mcp9808_init(SensorContext_t *ctx) {
         return false;
     }
 
-    if (!s_i2c_initialized[port]) {
-        i2c_config_t idf_i2c_cfg = {
-            .mode = I2C_MODE_MASTER,
-            .sda_io_num = cfg->sda_pin,
-            .scl_io_num = cfg->scl_pin,
-            .sda_pullup_en = GPIO_PULLUP_ENABLE,
-            .scl_pullup_en = GPIO_PULLUP_ENABLE,
-            .master.clk_speed = 400000,  // 400kHz, supported by MCP9808 & Adafruit example
-            .clk_flags = 0,
-        };
+    // if (!s_i2c_initialized[port]) {
+    //     i2c_config_t idf_i2c_cfg = {
+    //         .mode = I2C_MODE_MASTER,
+    //         .sda_io_num = cfg->sda_pin,
+    //         .scl_io_num = cfg->scl_pin,
+    //         .sda_pullup_en = GPIO_PULLUP_ENABLE,
+    //         .scl_pullup_en = GPIO_PULLUP_ENABLE,
+    //         .master.clk_speed = 400000,  // 400kHz, supported by MCP9808 & Adafruit example
+    //         .clk_flags = 0,
+    //     };
 
-        esp_err_t err = i2c_param_config(port, &idf_i2c_cfg);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "i2c_param_config failed: %d", err);
-            return false;
-        }
+    //     esp_err_t err = i2c_param_config(port, &idf_i2c_cfg);
+    //     if (err != ESP_OK) {
+    //         ESP_LOGE(TAG, "i2c_param_config failed: %d", err);
+    //         return false;
+    //     }
 
-        err = i2c_driver_install(port, idf_i2c_cfg.mode, 0, 0, 0);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            // If already installed, returns ESP_ERR_INVALID_STATE, can ignore
-            ESP_LOGE(TAG, "i2c_driver_install failed: %d", err);
-            return false;
-        }
+    //     err = i2c_driver_install(port, idf_i2c_cfg.mode, 0, 0, 0);
+    //     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+    //         // If already installed, returns ESP_ERR_INVALID_STATE, can ignore
+    //         ESP_LOGE(TAG, "i2c_driver_install failed: %d", err);
+    //         return false;
+    //     }
 
-        s_i2c_initialized[port] = true;
-        ESP_LOGI(TAG, "I2C port %d initialized for MCP9808 (SDA=%d SCL=%d addr=0x%02X)",
-                 (int)port, cfg->sda_pin, cfg->scl_pin, addr);
-    }
+    //     s_i2c_initialized[port] = true;
+    //     ESP_LOGI(TAG, "I2C port %d initialized for MCP9808 (SDA=%d SCL=%d addr=0x%02X)",
+    //              (int)port, cfg->sda_pin, cfg->scl_pin, addr);
+    // }
 
     // ========== 3. Detect MCP9808 device ==========
     uint16_t manuf_id = 0;
@@ -224,6 +224,7 @@ bool mcp9808_read_sample(SensorContext_t *ctx, float *data_out) {
     esp_err_t err = mcp9808_read_bytes(port, addr, MCP9808_REG_AMBIENT_TEMP, buf, sizeof(buf));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read temperature (err=%d)", err);
+        vTaskDelay(pdMS_TO_TICKS(50)); // brief delay before next read attempt to avoid bus congestion
         return false;
     }
 

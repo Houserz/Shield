@@ -26,7 +26,7 @@ static const char *TAG = "bpw34";
 /** BPW34 typical open-circuit voltage at 1 mW/cm², 950 nm (datasheet). Used for irradiance scale. */
 #define BPW34_VO_AT_1MW_PER_CM2_MV  350.0f
 
-static adc_oneshot_unit_handle_t s_adc1_handle = NULL;
+extern adc_oneshot_unit_handle_t s_adc1_handle;
 
 /**
  * @brief Initialize BPW34 photodiode (ADC channel)
@@ -52,17 +52,17 @@ bool photodiode_init(SensorContext_t *ctx) {
 
     adc_channel_t chan = (adc_channel_t)adc_cfg->adc_channel;
 
-    if (s_adc1_handle == NULL) {
-        adc_oneshot_unit_init_cfg_t init_cfg = {
-            .unit_id = ADC_UNIT_1,
-            .ulp_mode = ADC_ULP_MODE_DISABLE,
-        };
-        esp_err_t err = adc_oneshot_new_unit(&init_cfg, &s_adc1_handle);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "adc_oneshot_new_unit failed: %s", esp_err_to_name(err));
-            return false;
-        }
-    }
+    // if (s_adc1_handle == NULL) {
+    //     adc_oneshot_unit_init_cfg_t init_cfg = {
+    //         .unit_id = ADC_UNIT_1,
+    //         .ulp_mode = ADC_ULP_MODE_DISABLE,
+    //     };
+    //     esp_err_t err = adc_oneshot_new_unit(&init_cfg, &s_adc1_handle);
+    //     if (err != ESP_OK) {
+    //         ESP_LOGE(TAG, "adc_oneshot_new_unit failed: %s", esp_err_to_name(err));
+    //         return false;
+    //     }
+    // }
 
     adc_oneshot_chan_cfg_t chan_cfg = {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
