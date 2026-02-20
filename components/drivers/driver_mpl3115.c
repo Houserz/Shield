@@ -43,7 +43,8 @@
 #define MPL3115_CTRL_OSR_MASK    0x38
 #define MPL3115_CTRL_OSR_SHIFT   3
 // OSR 0..7 → 2^0 .. 2^7 = 1, 2, 4, 8, 16, 32, 64, 128
-#define MPL3115_OSR_128          7
+
+#define MPL3115_OSR_4            2  // ~18ms conversion, fits 50Hz (20ms) budget
 
 // PT_DATA_CFG: enable event flags (required during setup per hookup guide)
 #define MPL3115_PT_DATA_CFG_TDEFE  (1u << 0)
@@ -142,8 +143,8 @@ bool mpl3115_init(SensorContext_t *ctx) {
     }
     ESP_LOGI(TAG, "MPL3115A2 detected (WHO_AM_I=0x%02X)", whoami);
 
-    // 3. setModeStandby() then configure CTRL_REG1 (barometer, OSR=128)
-    uint8_t ctrl = (MPL3115_OSR_128 << MPL3115_CTRL_OSR_SHIFT);
+    // 3. setModeStandby() then configure CTRL_REG1 (barometer, OSR=4 for 50Hz)
+    uint8_t ctrl = (MPL3115_OSR_4 << MPL3115_CTRL_OSR_SHIFT);
     err = mpl3115_write_reg(port, addr, MPL3115_REG_CTRL_REG1, ctrl);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set CTRL_REG1 standby (err=%d)", err);
@@ -165,7 +166,7 @@ bool mpl3115_init(SensorContext_t *ctx) {
         return false;
     }
 
-    ESP_LOGI(TAG, "MPL3115A2 init OK (barometer, OSR=128)");
+    ESP_LOGI(TAG, "MPL3115A2 init OK (barometer, OSR=4, ~18ms/sample)");
     return true;
 }
 
@@ -187,13 +188,22 @@ bool mpl3115_read_sample(SensorContext_t *ctx, float *data_out) {
     i2c_port_t port = (i2c_port_t)cfg->i2c_port;
     uint8_t addr = cfg->device_addr;
 
-    // Wait for pressure data ready (PDR). Datasheet Table 6: first conversion from STANDBY->ACTIVE
-    // can take up to 1000 ms at OSR=128; subsequent conversions ~512 ms. Use 1500 ms timeout.
-    const int max_wait_ms = 1500;
+    // Trigger one-shot conversion (OST auto-clears when complete)
+    uint8_t ctrl = (MPL3115_OSR_4 << MPL3115_CTRL_OSR_SHIFT) | MPL3115_CTRL_OST;
+    esp_err_t err = mpl3115_write_reg(port, addr, MPL3115_REG_CTRL_REG1, ctrl);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to trigger one-shot (err=%d)", err);
+        return false;
+    }
+
+    // Poll for PDR - OSR=4 takes ~18ms
+    const int max_wait_ms = 50;
     int waited = 0;
     uint8_t status = 0;
     while (waited < max_wait_ms) {
-        esp_err_t err = mpl3115_read_reg(port, addr, MPL3115_REG_STATUS, &status);
+        vTaskDelay(pdMS_TO_TICKS(5));
+        waited += 5;
+        err = mpl3115_read_reg(port, addr, MPL3115_REG_STATUS, &status);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to read STATUS (err=%d)", err);
             return false;
@@ -201,30 +211,22 @@ bool mpl3115_read_sample(SensorContext_t *ctx, float *data_out) {
         if (status & MPL3115_STATUS_PDR) {
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
-        waited += 10;
     }
     if (!(status & MPL3115_STATUS_PDR)) {
-        ESP_LOGE(TAG, "Pressure data ready timeout");
-        vTaskDelay(pdMS_TO_TICKS(50)); // brief delay before next read attempt to avoid bus congestion
+        ESP_LOGE(TAG, "Timeout: STATUS=0x%02X after %dms", status, waited);
         return false;
     }
 
     uint8_t p_buf[3];
-    esp_err_t err = mpl3115_read_bytes(port, addr, MPL3115_REG_OUT_P_MSB, p_buf, sizeof(p_buf));
+    err = mpl3115_read_bytes(port, addr, MPL3115_REG_OUT_P_MSB, p_buf, sizeof(p_buf));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read OUT_P (err=%d)", err);
         return false;
     }
 
-    // 20-bit pressure: MSB.CSB.LSB top 4 bits of LSB are fractional (datasheet 0.25 Pa per LSB)
     uint32_t raw = ((uint32_t)p_buf[0] << 12) | ((uint32_t)p_buf[1] << 4) | (p_buf[2] >> 4);
     float pa = (float)raw * MPL3115_PA_PER_COUNT;
-    *data_out = pa / 1000.0f;  // kPa
-
-    // Per datasheet Figure 7 (polling): after read, "Set Active" again to trigger next conversion.
-    uint8_t ctrl = (MPL3115_OSR_128 << MPL3115_CTRL_OSR_SHIFT) | MPL3115_CTRL_SBYB;
-    (void)mpl3115_write_reg(port, addr, MPL3115_REG_CTRL_REG1, ctrl);
+    *data_out = pa / 1000.0f;
 
     return true;
 }
