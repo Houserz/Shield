@@ -27,6 +27,10 @@
 #include "data_types.h"
 #include "sd_storage.h"
 #include "driver/i2c.h"
+#include "driver/gpio.h"
+
+#define STATUS_LED_PIN GPIO_NUM_4
+#define TICKS_PER_HOUR 120000
 
 static const char *TAG = "SHIELD";
 
@@ -135,7 +139,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 2,
         .type = SENSOR_TYPE_CURRENT,
         .sampling_rate_hz = 200,
-        .enabled = true,
+        .enabled = false,
         .hw_config = &current_adc_cfg,
         .init = current_init,
         .read_sample = current_read_sample
@@ -468,8 +472,19 @@ void app_main(void) {
     }
     ESP_LOGI(TAG, "FreeRTOS queues created OK");
 
+    // Configure status LED (GPIO 4) - on while acquiring, off when done
+    gpio_config_t led_cfg = {
+        .pin_bit_mask = (1ULL << STATUS_LED_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&led_cfg);
+
     // Set to running state
     system_state = DAQ_STATE_RUNNING;
+    gpio_set_level(STATUS_LED_PIN, 1);
     ESP_LOGI(TAG, "System state -> RUNNING, launching tasks...");
 
     // Core 0 (PRO_CPU): Data acquisition tasks
@@ -482,7 +497,7 @@ void app_main(void) {
     
     // TODO: Modify run duration or change to button-triggered stop based on requirements
     // Current: Automatically stops after 30 seconds (for testing)
-    vTaskDelay(pdMS_TO_TICKS(60000));
+    vTaskDelay(pdMS_TO_TICKS(15 * TICKS_PER_HOUR));  // Run for 24 hours (adjust as needed)
 
     // Stop acquisition
     system_state = DAQ_STATE_STOPPING;
@@ -504,6 +519,7 @@ void app_main(void) {
     vQueueDelete(medium_queue);
     vQueueDelete(slow_queue);
     sd_storage_deinit();
+    gpio_set_level(STATUS_LED_PIN, 0);
 
     ESP_LOGI(TAG, "========== Project SHIELD finished ==========");
     ESP_LOGI(TAG, "Stats: fast=%"PRIu32" medium=%"PRIu32" slow=%"PRIu32" overruns=%"PRIu32" sd_errors=%"PRIu32,
