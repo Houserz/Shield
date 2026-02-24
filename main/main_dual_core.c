@@ -30,7 +30,6 @@
 #include "driver/gpio.h"
 
 #define STATUS_LED_PIN GPIO_NUM_4
-#define TICKS_PER_HOUR 120000
 
 static const char *TAG = "SHIELD";
 
@@ -494,14 +493,25 @@ void app_main(void) {
 
     // Core 1 (APP_CPU): SD card write task
     xTaskCreatePinnedToCore(vTaskSDWriter, "SDWriter", 8192, NULL, 5, NULL, 1);
+
+    uint32_t acq_start_ms = get_timestamp_ms();
+    ESP_LOGI(TAG, "Acquisition START at %"PRIu32" ms since boot", acq_start_ms);
     
-    // TODO: Modify run duration or change to button-triggered stop based on requirements
-    // Current: Automatically stops after 30 seconds (for testing)
-    vTaskDelay(pdMS_TO_TICKS(15 * TICKS_PER_HOUR));  // Run for 24 hours (adjust as needed)
+    // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
+    for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
+        vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
+        ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
+                 hour, get_timestamp_ms() - acq_start_ms);
+    }
+
+    uint32_t acq_end_ms = get_timestamp_ms();
+    uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;
+    statistics.duration_ms = acq_duration_ms;
 
     // Stop acquisition
     system_state = DAQ_STATE_STOPPING;
-    ESP_LOGI(TAG, "System state -> STOPPING");
+    ESP_LOGI(TAG, "Acquisition STOP at %"PRIu32" ms since boot (ran %"PRIu32" ms = %.2f hours)",
+             acq_end_ms, acq_duration_ms, acq_duration_ms / 3600000.0f);
 
     // Wait for tasks to end
     vTaskDelay(pdMS_TO_TICKS(1000));
