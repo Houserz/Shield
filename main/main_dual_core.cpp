@@ -15,19 +15,27 @@
  *   - INMP441 (MEMS Microphone, I2S, high sample rate)
  *   - 751-1015-ND (Photodiode, analog/ADC, medium sample rate)
  */
+#include "BNO08x.hpp"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/queue.h"
-#include "esp_log.h"
-#include "sensor_hal.h"
-#include "data_types.h"
-#include "sd_storage.h"
-#include "driver/i2c.h"
-#include "driver/gpio.h"
+extern "C" {
+    #include "sensor_hal.h"
+    #include "data_types.h"
+    #include "sd_storage.h"
+    #include "driver/i2c.h"
+    #include "driver/gpio.h"
+    #include "freertos/FreeRTOS.h"
+    #include "freertos/task.h"
+    #include "freertos/queue.h"
+    #include "esp_log.h"
+
+    // BNO085 driver declarations
+    bool accel_init(SensorContext_t *ctx);
+    bool accel_read_sample(SensorContext_t *ctx, float *data_out);
+    bool gyro_init(SensorContext_t *ctx);
+    bool gyro_read_sample(SensorContext_t *ctx, float *data_out);
+    bool mag_init(SensorContext_t *ctx);
+    bool mag_read_sample(SensorContext_t *ctx, float *data_out);
+}
 
 #define STATUS_LED_PIN GPIO_NUM_4
 
@@ -48,15 +56,30 @@ static daq_statistics_t statistics = {0};
 // BNO085 - SPI Configuration (per Adafruit BNO085 datasheet)
 // SPI requires: CS, SCLK, MOSI, MISO, INT (data ready), RST (reset)
 // IMPORTANT: PS0 and PS1 must be BOTH HIGH (3.3V) for SPI mode. If both are GND, chip stays in I2C mode!
-static spi_config_t bno085_spi_cfg = {
-    .spi_host = 2,      // SPI2 or SPI3
-    .cs_pin = 7,       // TODO: CS pin
-    .sclk_pin = 6,     // TODO: SCLK (SCK)
-    .mosi_pin = 8,     // TODO: MOSI (DI on BNO085)
-    .miso_pin = 9,     // TODO: MISO (SDA on BNO085)
-    .int_pin = 15,      // TODO: INT pin (data ready, active low) - use -1 if not connected
-    .rst_pin = 16       // TODO: RST pin (reset, active low) - use -1 if not connected
-};
+// static spi_config_t bno085_spi_cfg = {
+//     .spi_host = 2,      // SPI2 or SPI3
+//     .cs_pin = 7,       // TODO: CS pin
+//     .sclk_pin = 6,     // TODO: SCLK (SCK)
+//     .mosi_pin = 8,     // TODO: MOSI (DI on BNO085)
+//     .miso_pin = 9,     // TODO: MISO (SDA on BNO085)
+//     .int_pin = 15,      // TODO: INT pin (data ready, active low) - use -1 if not connected
+//     .rst_pin = 16       // TODO: RST pin (reset, active low) - use -1 if not connected
+// };
+
+// bno08x_config_t has constructors (non-aggregate), so use assignment after default init
+static bno08x_config_t bno085_spi_cfg = []() {
+    bno08x_config_t cfg;
+    cfg.io_mosi = GPIO_NUM_40; // DI on BNO085
+    cfg.io_miso = GPIO_NUM_39; // SDA on BNO085
+    cfg.io_sclk = GPIO_NUM_38; // SCL on BNO085
+    cfg.io_cs   = GPIO_NUM_46;
+    cfg.io_int  = GPIO_NUM_5;
+    cfg.io_rst  = GPIO_NUM_6;
+    cfg.spi_peripheral = SPI3_HOST;
+    return cfg;
+}();
+
+static BNO08x bno085_imu(bno085_spi_cfg);
 
 // SW-420 - GPIO Configuration
 // GPIO10: digital input, no conflict with ADC or other peripherals
@@ -110,19 +133,19 @@ static adc_config_t photodiode_adc_cfg = {
 // ==================== Sensor Array Definition ====================
 // Set .enabled = false to disable a sensor (skip init and acquisition)
 
-#define NUM_SENSORS 7
+#define NUM_SENSORS 9
 
 static SensorContext_t my_sensors[NUM_SENSORS] = {
     // [0] BNO085 IMU - Fast Tier
-    {
-        .id = 0,
-        .type = SENSOR_TYPE_IMU,
-        .sampling_rate_hz = 1000,
-        .enabled = false,
-        .hw_config = &bno085_spi_cfg,
-        .init = bno085_init,
-        .read_sample = bno085_read_sample
-    },
+    // {
+    //     .id = 0,
+    //     .type = SENSOR_TYPE_IMU,
+    //     .sampling_rate_hz = 1000,
+    //     .enabled = false,
+    //     .hw_config = &bno085_spi_cfg,
+    //     .init = bno085_init,
+    //     .read_sample = bno085_read_sample
+    // },
     // [1] SW-420 Vibration Sensor - Fast Tier
     {
         .id = 1,
@@ -182,6 +205,36 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .hw_config = &photodiode_adc_cfg,
         .init = photodiode_init,
         .read_sample = photodiode_read_sample
+    },
+    // [7] BNO085 Magnetometer - Fast Tier
+    {
+        .id = 7,
+        .type = SENSOR_TYPE_MAGNETOMETER,
+        .sampling_rate_hz = 1000,
+        .enabled = true,
+        .hw_config = &bno085_imu,
+        .init = mag_init,
+        .read_sample = mag_read_sample
+    },
+    // [8] BNO085 Gyroscope - Fast Tier
+    {
+        .id = 8,
+        .type = SENSOR_TYPE_GYROSCOPE,
+        .sampling_rate_hz = 1000,
+        .enabled = true,
+        .hw_config = &bno085_imu,
+        .init = gyro_init,
+        .read_sample = gyro_read_sample
+    },
+    // [9] BNO085 Accelerometer - Fast Tier
+    {
+        .id = 9,
+        .type = SENSOR_TYPE_ACCELEROMETER,
+        .sampling_rate_hz = 1000,
+        .enabled = true,
+        .hw_config = &bno085_imu,
+        .init = accel_init,
+        .read_sample = accel_read_sample
     }
 };
 
@@ -204,7 +257,8 @@ void vTaskFast(void *pvParameters) {
                         .type = QUEUE_MSG_DATA,
                         .data = {
                             .timestamp_ms = get_timestamp_ms(),
-                            .sensor_id = my_sensors[i].id,
+                            .sensor_id = (uint8_t)my_sensors[i].id,
+                            .reserved = {0},
                             .data = data
                         }
                     };
@@ -271,7 +325,7 @@ void vTaskSlow(void *pvParameters) {
     const TickType_t xFrequency = pdMS_TO_TICKS(20);  // 20ms = 50Hz
 
     while (system_state == DAQ_STATE_RUNNING) {
-        for (int i = 0; i < NUM_SENSORS; i++) {
+        for (int i = 1; i <= NUM_SENSORS; i++) {
             if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 50) {
                 float data = 0.0f;
                 if (my_sensors[i].read_sample(&my_sensors[i], &data)) {
@@ -279,7 +333,8 @@ void vTaskSlow(void *pvParameters) {
                         .type = QUEUE_MSG_DATA,
                         .data = {
                             .timestamp_ms = get_timestamp_ms(),
-                            .sensor_id = my_sensors[i].id,
+                            .sensor_id = (uint8_t)my_sensors[i].id,
+                            .reserved = {0},
                             .data = data
                         }
                     };
@@ -394,7 +449,7 @@ void i2c_scan(i2c_port_t port) {
  * @brief Main program entry point
  * TODO: Modify acquisition duration, trigger method, etc. based on actual requirements
  */
-void app_main(void) {
+extern "C" void app_main(void) {
     ESP_LOGI(TAG, "========== Project SHIELD starting ==========");
 
     // Initialize data types module
@@ -409,15 +464,14 @@ void app_main(void) {
     }
     ESP_LOGI(TAG, "SD card initialized OK");
 
-    i2c_config_t i2c_cfg = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = 17,
-        .scl_io_num = 18,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = 400000,
-        .clk_flags = 0,
-    };
+    i2c_config_t i2c_cfg = {};
+    i2c_cfg.mode = I2C_MODE_MASTER;
+    i2c_cfg.sda_io_num = 17;
+    i2c_cfg.scl_io_num = 18;
+    i2c_cfg.sda_pullup_en = GPIO_PULLUP_ENABLE;
+    i2c_cfg.scl_pullup_en = GPIO_PULLUP_ENABLE;
+    i2c_cfg.master.clk_speed = 400000;
+    i2c_cfg.clk_flags = 0;
     ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_0, &i2c_cfg));
     ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0));
     i2c_reset_tx_fifo(I2C_NUM_0);
@@ -425,9 +479,16 @@ void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(100));  // give devices time to settle
     i2c_scan(I2C_NUM_0);
 
+
+    if (!bno085_imu.initialize()) {
+        ESP_LOGE(TAG, "BNO085 initialize() FAILED - aborting");
+        return;
+    }
+    ESP_LOGI(TAG, "BNO085 initialized OK");
+
     // Initialize all sensors
-    const char *sensor_names[] = {"BNO085 IMU", "SW-420 Vibration", "ACS723 Current", "MPL3115 Pressure", "MCP9808 Temp",
-                                  "INMP441 Microphone", "751-1015-ND Photodiode"};
+    const char *sensor_names[] = {"SW-420 Vibration", "ACS723 Current", "MPL3115 Pressure", "MCP9808 Temp",
+                                  "INMP441 Microphone", "751-1015-ND Photodiode", "BNO085 Magnetometer", "BNO085 Gyroscope", "BNO085 Accelerometer"};
     for (int i = 0; i < NUM_SENSORS; i++) {
         if (!my_sensors[i].enabled) {
             ESP_LOGI(TAG, "Sensor [%d] %s disabled - skipping", i, sensor_names[i]);
@@ -507,9 +568,7 @@ void app_main(void) {
     //     ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
     //              hour, get_timestamp_ms() - acq_start_ms);
     // }
-
-    // Testing: run for 15 seconds
-    vTaskDelay(pdMS_TO_TICKS(15 * 1000));
+    vTaskDelay(pdMS_TO_TICKS(60000));  // 15 hours
 
     uint32_t acq_end_ms = get_timestamp_ms();
     uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;

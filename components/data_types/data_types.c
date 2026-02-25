@@ -64,9 +64,11 @@ bool metadata_create(const char *filepath, const char *run_id) {
     fprintf(file, "  },\n");
     fprintf(file, "  \"sensors\": {\n");
     fprintf(file, "    \"fast\": [\n");
-    fprintf(file, "      {\"id\": 0, \"name\": \"BNO085_IMU\", \"type\": \"IMU\", \"rate\": 1000, \"unit\": \"m/s^2\"},\n");
     fprintf(file, "      {\"id\": 1, \"name\": \"SW420_Vibration\", \"type\": \"VIBRATION\", \"rate\": 1000, \"unit\": \"binary\"},\n");
-    fprintf(file, "      {\"id\": 5, \"name\": \"INMP441_Microphone\", \"type\": \"MICROPHONE\", \"rate\": 1000, \"unit\": \"dBFS\"}\n");
+    fprintf(file, "      {\"id\": 5, \"name\": \"INMP441_Microphone\", \"type\": \"MICROPHONE\", \"rate\": 1000, \"unit\": \"dBFS\"},\n");
+    fprintf(file, "      {\"id\": 7, \"name\": \"BNO085_Magnetometer\", \"type\": \"MAGNETOMETER\", \"rate\": 1000, \"unit\": \"uT\"},\n");
+    fprintf(file, "      {\"id\": 8, \"name\": \"BNO085_Gyroscope\", \"type\": \"GYROSCOPE\", \"rate\": 1000, \"unit\": \"rad/s\"},\n");
+    fprintf(file, "      {\"id\": 9, \"name\": \"BNO085_Accelerometer\", \"type\": \"ACCELEROMETER\", \"rate\": 1000, \"unit\": \"m/s^2\"}\n");
     fprintf(file, "    ],\n");
     fprintf(file, "    \"medium\": [\n");
     fprintf(file, "      {\"id\": 2, \"name\": \"ACS723_Current\", \"type\": \"CURRENT\", \"rate\": 200, \"unit\": \"A\"},\n");

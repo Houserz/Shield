@@ -12,7 +12,10 @@ typedef enum {
     SENSOR_TYPE_VIBRATION,
     SENSOR_TYPE_CURRENT,
     SENSOR_TYPE_MICROPHONE,
-    SENSOR_TYPE_PHOTODIODE
+    SENSOR_TYPE_PHOTODIODE,
+    SENSOR_TYPE_MAGNETOMETER,
+    SENSOR_TYPE_GYROSCOPE,
+    SENSOR_TYPE_ACCELEROMETER
 } sensor_type_t;
 
 // Sensor context structure (implements OOP polymorphism)

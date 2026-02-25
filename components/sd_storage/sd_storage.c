@@ -131,6 +131,7 @@ bool sd_storage_init(void) {
     };
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = SPI2_HOST;
     host.max_freq_khz = SDMMC_FREQ_DEFAULT;
 
     spi_bus_config_t bus_cfg = {
