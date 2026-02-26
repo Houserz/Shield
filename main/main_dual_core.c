@@ -481,6 +481,10 @@ void app_main(void) {
     };
     gpio_config(&led_cfg);
 
+    // Testing: wait until user opens serial monitor and presses Enter before starting acquisition.
+    ESP_LOGI(TAG, ">>> Open serial monitor and press ENTER to start acquisition <<<");
+    (void) getchar();
+
     // Set to running state
     system_state = DAQ_STATE_RUNNING;
     gpio_set_level(STATUS_LED_PIN, 1);
@@ -497,12 +501,15 @@ void app_main(void) {
     uint32_t acq_start_ms = get_timestamp_ms();
     ESP_LOGI(TAG, "Acquisition START at %"PRIu32" ms since boot", acq_start_ms);
     
-    // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
-    for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
-        vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
-        ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
-                 hour, get_timestamp_ms() - acq_start_ms);
-    }
+    // // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
+    // for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
+    //     vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
+    //     ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
+    //              hour, get_timestamp_ms() - acq_start_ms);
+    // }
+
+    // Testing: run for 15 seconds
+    vTaskDelay(pdMS_TO_TICKS(15 * 1000));
 
     uint32_t acq_end_ms = get_timestamp_ms();
     uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;
