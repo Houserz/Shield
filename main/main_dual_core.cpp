@@ -568,7 +568,9 @@ extern "C" void app_main(void) {
     //     ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
     //              hour, get_timestamp_ms() - acq_start_ms);
     // }
-    vTaskDelay(pdMS_TO_TICKS(60000));  // 15 hours
+
+    // Testing: run for 15 seconds
+    vTaskDelay(pdMS_TO_TICKS(15 * 1000));
 
     uint32_t acq_end_ms = get_timestamp_ms();
     uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;
