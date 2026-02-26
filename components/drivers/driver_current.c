@@ -1,105 +1,54 @@
 /**
  * @file driver_current.c
- * @brief ACS723 Current Sensor Driver (ADC, 200Hz)
+ * @brief ACS723 Current Sensor Driver via ADS1115 I2C ADC (A1 channel, 200 Hz)
  *
- * Supported chip: ACS723 (±5A, 400mV/A, bidirectional)
- *  - Current range: ±5A
- *  - Sensitivity: 400mV/A
- *  - Supply voltage: 4.5V~5.5V
- *  - Output at zero current: VIOUT(Q) = VCC×0.5; after voltage division, calculate as 1.5V
- *  - Formula: I = (VIOUT - VIOUT(Q)) / 0.4
+ * Datasheet: Allegro ACS723-DS, Rev. 2
+ * Hardware: ACS723 VIOUT -> ADS1115 A1, VCC = 5V, GND, BW_SEL -> GND (80kHz)
  *
- * If VCC=5V and a 2:3 divider is used for ADC input (divider ratio 0.6), then VIOUT(Q)=1.5V.
- * For different hardware, change VOUT_QUIESCENT or SENSITIVITY_MV_PER_A as needed.
+ * Variant defaults: ACS723LLCTR-10AB (±10A, 200 mV/A, bidirectional)
+ * To change variant, update SENS_MV_PER_A and VCC_V below:
+ *   5AB:  400 mV/A, ±5A,  VIOUT(Q) = VCC * 0.5
+ *   10AB: 200 mV/A, ±10A, VIOUT(Q) = VCC * 0.5
+ *   20AB: 100 mV/A, ±20A, VIOUT(Q) = VCC * 0.5
+ *   40AB:  50 mV/A, ±40A, VIOUT(Q) = VCC * 0.5
  *
- * Uses ESP-IDF esp_adc oneshot driver (non-deprecated API).
+ * Conversion formula (bidirectional):
+ *   VIOUT(Q) = VCC * 0.5 = 2.5V at 0A
+ *   IP (A) = (VIOUT - VIOUT(Q)) / Sens
  */
 
 #include "sensor_hal.h"
-#include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
-#include <stdlib.h>
 
 static const char *TAG = "acs723";
 
-// ACS723 ±5A model fixed parameters
-#define SENSITIVITY_MV_PER_A    400.0f   // 400mV/A
-#define VOUT_QUIESCENT          1.5f     // ADC voltage at zero current (V), 5V×0.5×0.6
+#define ACS723_VCC_V          5.0f    // VCC supply voltage (must be 5V)
+#define ACS723_SENS_MV_PER_A  200.0f  // Sensitivity: change if using different variant
+#define ACS723_VIOUT_Q        (ACS723_VCC_V * 0.5f)  // Zero-current output voltage (2.5V)
 
-adc_oneshot_unit_handle_t s_adc1_handle = NULL;
+static ads1115_config_t s_ads1115_cfg = {
+    .i2c_port  = I2C_NUM_0,
+    .i2c_addr  = ADS1115_I2C_ADDR,
+    .pga       = ADS1115_PGA_4096MV,  // ±4.096V, covers 0~5V VIOUT with headroom
+    .data_rate = ADS1115_DR_250SPS,
+};
 
 bool current_init(SensorContext_t *ctx) {
-    if (ctx == NULL || ctx->hw_config == NULL) {
-        ESP_LOGE(TAG, "Invalid context or hw_config");
-        return false;
-    }
-
-    adc_config_t *adc_cfg = (adc_config_t *)ctx->hw_config;
-    if (adc_cfg->adc_channel < 0 || adc_cfg->adc_channel > 7) {
-        ESP_LOGE(TAG, "Invalid ADC1 channel: %d (0-7)", adc_cfg->adc_channel);
-        return false;
-    }
-
-    adc_channel_t chan = (adc_channel_t)adc_cfg->adc_channel;
-
-    if (s_adc1_handle == NULL) {
-        adc_oneshot_unit_init_cfg_t init_cfg = {
-            .unit_id = ADC_UNIT_1,
-            .ulp_mode = ADC_ULP_MODE_DISABLE,
-        };
-        if (adc_oneshot_new_unit(&init_cfg, &s_adc1_handle) != ESP_OK) {
-            ESP_LOGE(TAG, "adc_oneshot_new_unit failed");
-            return false;
-        }
-    }
-
-    adc_oneshot_chan_cfg_t chan_cfg = {
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-        .atten    = ADC_ATTEN_DB_12,
-    };
-    if (adc_oneshot_config_channel(s_adc1_handle, chan, &chan_cfg) != ESP_OK) {
-        ESP_LOGE(TAG, "adc_oneshot_config_channel failed");
-        return false;
-    }
-
-    // Power check: ACS723 powered and at zero current should output ~1.5V at ADC.
-    // If sensor has no power, VIOUT ≈ 0V, ADC raw ≈ 0. Fail init if voltage < 0.3V.
-    int adc_raw = 0;
-    if (adc_oneshot_read(s_adc1_handle, chan, &adc_raw) != ESP_OK) {
-        ESP_LOGE(TAG, "adc_oneshot_read failed during power check");
-        return false;
-    }
-    float voltage = (float)adc_raw * 3.3f / 4095.0f;
-    const float MIN_POWER_VOLTAGE = 0.3f;  // Below this: no power or wrong wiring
-    if (voltage < MIN_POWER_VOLTAGE) {
-        ESP_LOGE(TAG, "ACS723 no power or wrong wiring: ADC raw=%d voltage=%.2fV (expect ~1.5V at zero current)",
-                 adc_raw, voltage);
-        return false;
-    }
-
-    ESP_LOGI(TAG, "ACS723 init OK: ch=%d, GPIO=%d, 400mV/A ±5A (V=%.2fV)",
-             adc_cfg->adc_channel, adc_cfg->gpio_pin, voltage);
+    ESP_LOGI(TAG, "ACS723 init OK (ADS1115 A1, I2C 0x%02X, sens=%.0f mV/A)",
+             ADS1115_I2C_ADDR, ACS723_SENS_MV_PER_A);
     return true;
 }
 
 bool current_read_sample(SensorContext_t *ctx, float *data_out) {
-    if (ctx == NULL || ctx->hw_config == NULL || data_out == NULL) {
+    if (data_out == NULL) return false;
+
+    float voltage = 0.0f;
+    if (!ads1115_read_voltage(&s_ads1115_cfg, ADS1115_CH1, &voltage)) {
         return false;
     }
 
-    adc_config_t *adc_cfg = (adc_config_t *)ctx->hw_config;
-    adc_channel_t chan = (adc_channel_t)adc_cfg->adc_channel;
-    int adc_raw = 0;
-
-    if (adc_oneshot_read(s_adc1_handle, chan, &adc_raw) != ESP_OK) {
-        ESP_LOGE(TAG, "adc_oneshot_read failed");
-        return false;
-    }
-
-    // 12-bit raw -> voltage (0~3.3V typical with ADC_ATTEN_DB_12)
-    float voltage = (float)adc_raw * 3.3f / 4095.0f;
-
-    // I = (VIOUT - VIOUT(Q)) / Sensitivity
-    *data_out = (voltage - VOUT_QUIESCENT) / (SENSITIVITY_MV_PER_A / 1000.0f);
+    // Convert voltage to current (A)
+    // IP = (VIOUT - VIOUT(Q)) / Sens
+    *data_out = (voltage - ACS723_VIOUT_Q) / (ACS723_SENS_MV_PER_A / 1000.0f);
     return true;
 }

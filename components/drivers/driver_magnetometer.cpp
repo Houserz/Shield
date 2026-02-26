@@ -9,7 +9,7 @@ extern "C" bool mag_init(SensorContext_t *ctx) {
     if (ctx == NULL || ctx->hw_config == NULL) return false;
 
     imu = (BNO08x *)ctx->hw_config;
-    imu->rpt.cal_magnetometer.enable(100000UL);
+    imu->rpt.cal_magnetometer.enable(1000UL);
 
     ESP_LOGI(TAG, "Magnetometer report enabled");
     return true;

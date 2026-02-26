@@ -72,7 +72,7 @@ static bno08x_config_t bno085_spi_cfg = []() {
     cfg.io_mosi = GPIO_NUM_40; // DI on BNO085
     cfg.io_miso = GPIO_NUM_39; // SDA on BNO085
     cfg.io_sclk = GPIO_NUM_38; // SCL on BNO085
-    cfg.io_cs   = GPIO_NUM_46;
+    cfg.io_cs   = GPIO_NUM_37;
     cfg.io_int  = GPIO_NUM_5;
     cfg.io_rst  = GPIO_NUM_6;
     cfg.spi_peripheral = SPI3_HOST;
@@ -90,10 +90,10 @@ static vibration_gpio_config_t vibration_gpio_cfg = {
 // ACS723 - ADC Configuration
 // ADC1_CH0 = GPIO1. ACS723 output (5V supply) needs a voltage divider (e.g. 2:3)
 // to bring max output below 3.3V before connecting to this pin.
-static adc_config_t current_adc_cfg = {
-    .adc_channel = 0,   // ADC1_CH0
-    .gpio_pin = 1       // GPIO1
-};
+// static adc_config_t current_adc_cfg = {
+//     .adc_channel = 0,   // ADC1_CH0
+//     .gpio_pin = 1       // GPIO1
+// };
 
 // MPL3115A2 - I2C Configuration
 // I2C0 bus shared with MCP9808. Use 4.7kΩ external pull-ups on SDA/SCL.
@@ -125,10 +125,10 @@ static inmp441_i2s_config_t inmp441_i2s_cfg = {
 
 // 751-1015-ND Photodiode - ADC Configuration (medium sample rate)
 // ADC1_CH1 = GPIO2. Connect photodiode TIA/load-resistor output to this pin.
-static adc_config_t photodiode_adc_cfg = {
-    .adc_channel = 1,   // ADC1_CH1
-    .gpio_pin = 2       // GPIO2
-};
+// static adc_config_t photodiode_adc_cfg = {
+//     .adc_channel = 1,   // ADC1_CH1
+//     .gpio_pin = 2       // GPIO2
+// };
 
 // ==================== Sensor Array Definition ====================
 // Set .enabled = false to disable a sensor (skip init and acquisition)
@@ -161,8 +161,8 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 2,
         .type = SENSOR_TYPE_CURRENT,
         .sampling_rate_hz = 200,
-        .enabled = false,
-        .hw_config = &current_adc_cfg,
+        .enabled = true,
+        .hw_config = NULL,
         .init = current_init,
         .read_sample = current_read_sample
     },
@@ -202,7 +202,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .type = SENSOR_TYPE_PHOTODIODE,
         .sampling_rate_hz = 200,
         .enabled = true,
-        .hw_config = &photodiode_adc_cfg,
+        .hw_config = NULL,
         .init = photodiode_init,
         .read_sample = photodiode_read_sample
     },
@@ -572,7 +572,7 @@ extern "C" void app_main(void) {
     // }
 
     // Testing: run for 15 seconds
-    vTaskDelay(pdMS_TO_TICKS(15 * 1000));
+    vTaskDelay(pdMS_TO_TICKS(60 * 1000));
 
     uint32_t acq_end_ms = get_timestamp_ms();
     uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;

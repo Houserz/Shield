@@ -9,7 +9,7 @@ extern "C" bool gyro_init(SensorContext_t *ctx) {
     if (ctx == NULL || ctx->hw_config == NULL) return false;
 
     imu = (BNO08x *)ctx->hw_config;
-    imu->rpt.cal_gyro.enable(100000UL);
+    imu->rpt.cal_gyro.enable(1000UL);
 
     ESP_LOGI(TAG, "Gyroscope report enabled");
     return true;

@@ -12,7 +12,7 @@ extern "C" bool accel_init(SensorContext_t *ctx) {
     }
 
     imu = (BNO08x *)ctx->hw_config;
-    imu->rpt.accelerometer.enable(100000UL);
+    imu->rpt.accelerometer.enable(1000UL);
     ESP_LOGI(TAG, "Accelerometer report enabled");
 
     return true;
