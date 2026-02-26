@@ -18,7 +18,7 @@ extern "C" bool mag_init(SensorContext_t *ctx) {
 extern "C" bool mag_read_sample(SensorContext_t *ctx, float *data_out) {
     if (data_out == NULL || imu == nullptr) return false;
 
-    if (!imu->data_available() || !imu->rpt.cal_magnetometer.has_new_data()) {
+    if (!imu->rpt.cal_magnetometer.has_new_data()) {
         return false;
     }
 

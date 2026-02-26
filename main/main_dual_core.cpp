@@ -249,6 +249,8 @@ void vTaskFast(void *pvParameters) {
     const TickType_t xFrequency = pdMS_TO_TICKS(1) > 0 ? pdMS_TO_TICKS(1) : 1;  // Min 1 tick
     
     while (system_state == DAQ_STATE_RUNNING) {
+        bno085_imu.data_available();  // Single blocking fetch for all IMU reports
+
         for (int i = 0; i < NUM_SENSORS; i++) {
             if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 1000) {
                 float data = 0.0f;

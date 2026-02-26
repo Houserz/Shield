@@ -21,7 +21,7 @@ extern "C" bool accel_init(SensorContext_t *ctx) {
 extern "C" bool accel_read_sample(SensorContext_t *ctx, float *data_out) {
     if (data_out == NULL || imu == nullptr) return false;
 
-    if (!imu->data_available() || !imu->rpt.accelerometer.has_new_data()) {
+    if (!imu->rpt.accelerometer.has_new_data()) {
         return false;
     }
 
