@@ -39,6 +39,8 @@ extern "C" {
 
 #define STATUS_LED_PIN GPIO_NUM_4
 
+static const bool TESTING_SHORT_DURATION = false;
+
 static const char *TAG = "SHIELD";
 
 // ==================== Global Queue Handles ====================
@@ -51,22 +53,12 @@ static daq_state_t system_state = DAQ_STATE_IDLE;
 static daq_statistics_t statistics = {0};
 
 // ==================== Hardware Configuration Instances ====================
-// TODO: Modify the following pin configurations based on actual hardware connections
 
-// BNO085 - SPI Configuration (per Adafruit BNO085 datasheet)
-// SPI requires: CS, SCLK, MOSI, MISO, INT (data ready), RST (reset)
-// IMPORTANT: PS0 and PS1 must be BOTH HIGH (3.3V) for SPI mode. If both are GND, chip stays in I2C mode!
-// static spi_config_t bno085_spi_cfg = {
-//     .spi_host = 2,      // SPI2 or SPI3
-//     .cs_pin = 7,       // TODO: CS pin
-//     .sclk_pin = 6,     // TODO: SCLK (SCK)
-//     .mosi_pin = 8,     // TODO: MOSI (DI on BNO085)
-//     .miso_pin = 9,     // TODO: MISO (SDA on BNO085)
-//     .int_pin = 15,      // TODO: INT pin (data ready, active low) - use -1 if not connected
-//     .rst_pin = 16       // TODO: RST pin (reset, active low) - use -1 if not connected
-// };
-
-// bno08x_config_t has constructors (non-aggregate), so use assignment after default init
+// BNO085 - SPI Configuration
+// CS: GPIO37, SCLK: GPIO38, MOSI: GPIO40, MISO: GPIO39, INT: GPIO5, RST: GPIO6
+// NOTES: 
+//  - INT (GPIO5) must have a hardware pullup
+//  - PS0 and PS1 pins on BNO085 must be tied to HIGH (3.3v) for SPI
 static bno08x_config_t bno085_spi_cfg = []() {
     bno08x_config_t cfg;
     cfg.io_mosi = GPIO_NUM_40; // DI on BNO085
@@ -86,14 +78,6 @@ static BNO08x bno085_imu(bno085_spi_cfg);
 static vibration_gpio_config_t vibration_gpio_cfg = {
     .gpio_pin = 16
 };
-
-// ACS723 - ADC Configuration
-// ADC1_CH0 = GPIO1. ACS723 output (5V supply) needs a voltage divider (e.g. 2:3)
-// to bring max output below 3.3V before connecting to this pin.
-// static adc_config_t current_adc_cfg = {
-//     .adc_channel = 0,   // ADC1_CH0
-//     .gpio_pin = 1       // GPIO1
-// };
 
 // MPL3115A2 - I2C Configuration
 // I2C0 bus shared with MCP9808. Use 4.7kΩ external pull-ups on SDA/SCL.
@@ -123,30 +107,12 @@ static inmp441_i2s_config_t inmp441_i2s_cfg = {
     .sample_rate_hz = 16000 // INMP441 typical; decimate to 1kHz logical rate
 };
 
-// 751-1015-ND Photodiode - ADC Configuration (medium sample rate)
-// ADC1_CH1 = GPIO2. Connect photodiode TIA/load-resistor output to this pin.
-// static adc_config_t photodiode_adc_cfg = {
-//     .adc_channel = 1,   // ADC1_CH1
-//     .gpio_pin = 2       // GPIO2
-// };
-
 // ==================== Sensor Array Definition ====================
 // Set .enabled = false to disable a sensor (skip init and acquisition)
 
 #define NUM_SENSORS 9
 
 static SensorContext_t my_sensors[NUM_SENSORS] = {
-    // [0] BNO085 IMU - Fast Tier
-    // {
-    //     .id = 0,
-    //     .type = SENSOR_TYPE_IMU,
-    //     .sampling_rate_hz = 1000,
-    //     .enabled = false,
-    //     .hw_config = &bno085_spi_cfg,
-    //     .init = bno085_init,
-    //     .read_sample = bno085_read_sample
-    // },
-    // [1] SW-420 Vibration Sensor - Fast Tier
     {
         .id = 1,
         .type = SENSOR_TYPE_VIBRATION,
@@ -429,22 +395,6 @@ void vTaskSDWriter(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
-void i2c_scan(i2c_port_t port) {
-    ESP_LOGI("i2c_scan", "Scanning I2C port %d...", port);
-    for (uint8_t addr = 1; addr < 127; addr++) {
-        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
-        i2c_master_stop(cmd);
-        esp_err_t err = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
-        i2c_cmd_link_delete(cmd);
-        if (err == ESP_OK) {
-            ESP_LOGI("i2c_scan", "  Found device at 0x%02X", addr);
-        }
-    }
-    ESP_LOGI("i2c_scan", "Scan complete");
-}
-
 // ==================== Main Program ====================
 
 /**
@@ -479,7 +429,6 @@ extern "C" void app_main(void) {
     i2c_reset_tx_fifo(I2C_NUM_0);
     i2c_reset_rx_fifo(I2C_NUM_0);
     vTaskDelay(pdMS_TO_TICKS(100));  // give devices time to settle
-    i2c_scan(I2C_NUM_0);
 
 
     if (!bno085_imu.initialize()) {
@@ -544,10 +493,6 @@ extern "C" void app_main(void) {
     };
     gpio_config(&led_cfg);
 
-    // Testing: wait until user opens serial monitor and presses Enter before starting acquisition.
-    ESP_LOGI(TAG, ">>> Open serial monitor and press ENTER to start acquisition <<<");
-    (void) getchar();
-
     // Set to running state
     system_state = DAQ_STATE_RUNNING;
     gpio_set_level(STATUS_LED_PIN, 1);
@@ -564,15 +509,17 @@ extern "C" void app_main(void) {
     uint32_t acq_start_ms = get_timestamp_ms();
     ESP_LOGI(TAG, "Acquisition START at %"PRIu32" ms since boot", acq_start_ms);
     
-    // // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
-    // for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
-    //     vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
-    //     ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
-    //              hour, get_timestamp_ms() - acq_start_ms);
-    // }
-
-    // Testing: run for 15 seconds
-    vTaskDelay(pdMS_TO_TICKS(60 * 1000));
+    // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
+    if (!TESTING_SHORT_DURATION) { 
+        for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
+            vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
+            ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
+                    hour, get_timestamp_ms() - acq_start_ms);
+        }
+    } else {
+        // Testing: run for 15 seconds
+        vTaskDelay(pdMS_TO_TICKS(60 * 1000));
+    }
 
     uint32_t acq_end_ms = get_timestamp_ms();
     uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;
