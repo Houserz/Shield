@@ -30,7 +30,7 @@ static ads1115_config_t s_ads1115_cfg = {
     .i2c_port  = I2C_NUM_0,
     .i2c_addr  = ADS1115_I2C_ADDR,
     .pga       = ADS1115_PGA_4096MV,  // ±4.096V, covers 0~5V VIOUT with headroom
-    .data_rate = ADS1115_DR_250SPS,
+    .data_rate = ADS1115_DR_860SPS,
 };
 
 bool current_init(SensorContext_t *ctx) {

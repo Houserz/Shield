@@ -253,15 +253,15 @@ void vTaskFast(void *pvParameters) {
 
         for (int i = 0; i < NUM_SENSORS; i++) {
             if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 1000) {
-                float data = 0.0f;
-                if (my_sensors[i].read_sample(&my_sensors[i], &data)) {
+                float data[3] = {0};
+                if (my_sensors[i].read_sample(&my_sensors[i], data)) {
                     fast_queue_msg_t msg = {
                         .type = QUEUE_MSG_DATA,
                         .data = {
                             .timestamp_ms = get_timestamp_ms(),
                             .sensor_id = (uint8_t)my_sensors[i].id,
                             .reserved = {0},
-                            .data = data
+                            .data = {data[0], data[1], data[2]}
                         }
                     };
                     
@@ -327,7 +327,7 @@ void vTaskSlow(void *pvParameters) {
     const TickType_t xFrequency = pdMS_TO_TICKS(20);  // 20ms = 50Hz
 
     while (system_state == DAQ_STATE_RUNNING) {
-        for (int i = 1; i <= NUM_SENSORS; i++) {
+        for (int i = 0; i < NUM_SENSORS; i++) {
             if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 50) {
                 float data = 0.0f;
                 if (my_sensors[i].read_sample(&my_sensors[i], &data)) {
@@ -572,7 +572,7 @@ extern "C" void app_main(void) {
     // }
 
     // Testing: run for 15 seconds
-    vTaskDelay(pdMS_TO_TICKS(60 * 1000));
+    vTaskDelay(pdMS_TO_TICKS(15 * 1000));
 
     uint32_t acq_end_ms = get_timestamp_ms();
     uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;

@@ -15,7 +15,7 @@ static ads1115_config_t s_ads1115_cfg = {
     .i2c_port  = I2C_NUM_0,
     .i2c_addr  = ADS1115_I2C_ADDR,
     .pga       = ADS1115_PGA_4096MV,   // ±4.096V range, good for 0-3.3V signal
-    .data_rate = ADS1115_DR_250SPS,
+    .data_rate = ADS1115_DR_860SPS,
 };
 
 bool photodiode_init(SensorContext_t *ctx) {

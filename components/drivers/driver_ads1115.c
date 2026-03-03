@@ -49,8 +49,8 @@ bool ads1115_read_voltage(const ads1115_config_t *cfg, uint16_t channel, float *
         return false;
     }
 
-    // Wait for conversion (depends on data rate; 128SPS = ~8ms, add margin)
-    vTaskDelay(pdMS_TO_TICKS(10));
+    // Wait for conversion (860SPS = ~1.2ms, add margin)
+    vTaskDelay(pdMS_TO_TICKS(2));
 
     // Point to conversion register
     uint8_t reg = ADS1115_CONV_REG;

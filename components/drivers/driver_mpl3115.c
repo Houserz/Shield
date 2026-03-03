@@ -172,12 +172,24 @@ bool mpl3115_init(SensorContext_t *ctx) {
 
 // ==================== Public API: Read Pressure ====================
 
+// Pipeline state: trigger conversion on one call, read result on the next
+static bool s_conversion_triggered = false;
+
 /**
- * @brief Read pressure sample
+ * @brief Trigger a one-shot conversion (called from init and after each successful read)
+ */
+static esp_err_t mpl3115_trigger_oneshot(i2c_port_t port, uint8_t addr) {
+    uint8_t ctrl = (MPL3115_OSR_4 << MPL3115_CTRL_OSR_SHIFT) | MPL3115_CTRL_OST;
+    return mpl3115_write_reg(port, addr, MPL3115_REG_CTRL_REG1, ctrl);
+}
+
+/**
+ * @brief Read pressure sample (non-blocking pipeline)
  *
- * Per Hookup Guide: poll STATUS for data ready (PDR), then read OUT_P_MSB, OUT_P_CSB, OUT_P_LSB.
- * 20-bit value, resolution 0.25 Pa (datasheet). Output in kPa.
- * Hookup guide: -999 indicates I2C timeout (512 ms max); we return false on I2C error.
+ * Pipeline approach to avoid blocking:
+ * - First call: triggers one-shot conversion, returns false (no data yet)
+ * - Subsequent calls: checks if data is ready (non-blocking), reads if yes
+ *   and triggers next conversion; returns false if not ready yet
  */
 bool mpl3115_read_sample(SensorContext_t *ctx, float *data_out) {
     if (ctx == NULL || ctx->hw_config == NULL || data_out == NULL) {
@@ -188,45 +200,38 @@ bool mpl3115_read_sample(SensorContext_t *ctx, float *data_out) {
     i2c_port_t port = (i2c_port_t)cfg->i2c_port;
     uint8_t addr = cfg->device_addr;
 
-    // Trigger one-shot conversion (OST auto-clears when complete)
-    uint8_t ctrl = (MPL3115_OSR_4 << MPL3115_CTRL_OSR_SHIFT) | MPL3115_CTRL_OST;
-    esp_err_t err = mpl3115_write_reg(port, addr, MPL3115_REG_CTRL_REG1, ctrl);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to trigger one-shot (err=%d)", err);
+    // First call: just trigger conversion and return
+    if (!s_conversion_triggered) {
+        if (mpl3115_trigger_oneshot(port, addr) == ESP_OK) {
+            s_conversion_triggered = true;
+        }
         return false;
     }
 
-    // Poll for PDR - OSR=4 takes ~18ms
-    const int max_wait_ms = 50;
-    int waited = 0;
+    // Check if data is ready (non-blocking)
     uint8_t status = 0;
-    while (waited < max_wait_ms) {
-        vTaskDelay(pdMS_TO_TICKS(5));
-        waited += 5;
-        err = mpl3115_read_reg(port, addr, MPL3115_REG_STATUS, &status);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to read STATUS (err=%d)", err);
-            return false;
-        }
-        if (status & MPL3115_STATUS_PDR) {
-            break;
-        }
-    }
-    if (!(status & MPL3115_STATUS_PDR)) {
-        ESP_LOGE(TAG, "Timeout: STATUS=0x%02X after %dms", status, waited);
+    esp_err_t err = mpl3115_read_reg(port, addr, MPL3115_REG_STATUS, &status);
+    if (err != ESP_OK) {
         return false;
     }
 
+    if (!(status & MPL3115_STATUS_PDR)) {
+        return false;  // Not ready yet, try again next cycle
+    }
+
+    // Data is ready - read it
     uint8_t p_buf[3];
     err = mpl3115_read_bytes(port, addr, MPL3115_REG_OUT_P_MSB, p_buf, sizeof(p_buf));
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to read OUT_P (err=%d)", err);
         return false;
     }
 
     uint32_t raw = ((uint32_t)p_buf[0] << 12) | ((uint32_t)p_buf[1] << 4) | (p_buf[2] >> 4);
     float pa = (float)raw * MPL3115_PA_PER_COUNT;
     *data_out = pa / 1000.0f;
+
+    // Trigger next conversion immediately
+    mpl3115_trigger_oneshot(port, addr);
 
     return true;
 }

@@ -30,7 +30,7 @@ typedef struct __attribute__((packed)) {
     uint32_t timestamp_ms;    // Timestamp (milliseconds)
     uint8_t sensor_id;        // Sensor ID (0=IMU, 1=Vibration, 5=Microphone)
     uint8_t reserved[3];      // Padding for alignment
-    float data;               // Sensor data
+    float data[3];            // Sensor data (scalar: data[0] only; vector: x,y,z)
 } fast_data_record_t;
 
 /**

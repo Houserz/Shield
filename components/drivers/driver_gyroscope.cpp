@@ -23,6 +23,8 @@ extern "C" bool gyro_read_sample(SensorContext_t *ctx, float *data_out) {
     }
 
     bno08x_gyro_t d = imu->rpt.cal_gyro.get();
-    data_out[0] = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+    data_out[0] = d.x;
+    data_out[1] = d.y;
+    data_out[2] = d.z;
     return true;
 }

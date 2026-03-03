@@ -21,7 +21,7 @@ static const char *TAG = "inmp441";
 
 // INMP441 datasheet: 24-bit data, 64 SCK per WS frame, Philips I2S format
 // Read 4ms per call (~64 samples) for more stable RMS; stereo to support L/R=GND or L/R=VDD
-#define INMP441_SAMPLES_PER_READ 64
+#define INMP441_SAMPLES_PER_READ 16
 #define INMP441_READ_BLOCK       (INMP441_SAMPLES_PER_READ * 2)  // Stereo: L,R,L,R...
 
 // 24-bit two's complement: full scale = 2^23 - 1 ≈ 8388607
@@ -68,7 +68,7 @@ bool inmp441_init(SensorContext_t *ctx) {
 
     // Channel config
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG((i2s_port_t)cfg->i2s_port, I2S_ROLE_MASTER);
-    chan_cfg.dma_frame_num = 128;
+    chan_cfg.dma_frame_num = 16;
     chan_cfg.auto_clear = true;
 
     esp_err_t ret = i2s_new_channel(&chan_cfg, NULL, &s_inmp441.rx_handle);
