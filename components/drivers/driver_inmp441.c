@@ -20,8 +20,8 @@
 static const char *TAG = "inmp441";
 
 // INMP441 datasheet: 24-bit data, 64 SCK per WS frame, Philips I2S format
-// Read 4ms per call (~64 samples) for more stable RMS; stereo to support L/R=GND or L/R=VDD
-#define INMP441_SAMPLES_PER_READ 16
+// Read fewer samples per call for faster response (8 samples instead of 16)
+#define INMP441_SAMPLES_PER_READ 8
 #define INMP441_READ_BLOCK       (INMP441_SAMPLES_PER_READ * 2)  // Stereo: L,R,L,R...
 
 // 24-bit two's complement: full scale = 2^23 - 1 ≈ 8388607

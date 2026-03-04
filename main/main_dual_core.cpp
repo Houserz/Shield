@@ -39,7 +39,7 @@ extern "C" {
 
 #define STATUS_LED_PIN GPIO_NUM_4
 
-static const bool TESTING_SHORT_DURATION = false;
+static const bool TESTING_SHORT_DURATION = true;
 
 static const char *TAG = "SHIELD";
 
@@ -117,7 +117,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 1,
         .type = SENSOR_TYPE_VIBRATION,
         .sampling_rate_hz = 1000,
-        .enabled = true,
+        .enabled = true,  // Disabled for testing
         .hw_config = &vibration_gpio_cfg,
         .init = vibration_init,
         .read_sample = vibration_read_sample
@@ -157,7 +157,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 5,
         .type = SENSOR_TYPE_MICROPHONE,
         .sampling_rate_hz = 1000,
-        .enabled = true,
+        .enabled = true,  // Disabled for testing
         .hw_config = &inmp441_i2s_cfg,
         .init = inmp441_init,
         .read_sample = inmp441_read_sample
@@ -208,41 +208,39 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
 
 /**
  * @brief Fast task (1kHz, Core 0)
- * For high-speed sensors (BNO085 IMU, SW-420 Vibration, INMP441 Microphone)
+ * For high-speed sensors (BNO085 raw sensors, SW-420 Vibration, INMP441 Microphone)
  */
 void vTaskFast(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(1) > 0 ? pdMS_TO_TICKS(1) : 1;  // Min 1 tick
-    
-    while (system_state == DAQ_STATE_RUNNING) {
-        bno085_imu.data_available();  // Single blocking fetch for all IMU reports
+    const TickType_t xFrequency = pdMS_TO_TICKS(1) > 0 ? pdMS_TO_TICKS(1) : 1;
 
+    while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
-            if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 1000) {
-                float data[3] = {0};
-                if (my_sensors[i].read_sample(&my_sensors[i], data)) {
-                    fast_queue_msg_t msg = {
-                        .type = QUEUE_MSG_DATA,
-                        .data = {
-                            .timestamp_ms = get_timestamp_ms(),
-                            .sensor_id = (uint8_t)my_sensors[i].id,
-                            .reserved = {0},
-                            .data = {data[0], data[1], data[2]}
-                        }
-                    };
-                    
-                    if (xQueueSend(fast_queue, &msg, 0) != pdTRUE) {
-                        statistics.queue_overruns++;
-                    } else {
-                        statistics.fast_samples++;
+            if (!my_sensors[i].enabled || my_sensors[i].sampling_rate_hz != 1000) continue;
+
+            float data[3] = {0};
+            if (my_sensors[i].read_sample(&my_sensors[i], data)) {
+                fast_queue_msg_t msg = {
+                    .type = QUEUE_MSG_DATA,
+                    .data = {
+                        .timestamp_ms = get_timestamp_ms(),
+                        .sensor_id = (uint8_t)my_sensors[i].id,
+                        .reserved = {0},
+                        .data = {data[0], data[1], data[2]}
                     }
+                };
+
+                if (xQueueSend(fast_queue, &msg, 0) != pdTRUE) {
+                    statistics.queue_overruns++;
+                } else {
+                    statistics.fast_samples++;
                 }
             }
         }
-        
+
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
-    
+
     vTaskDelete(NULL);
 }
 
@@ -252,8 +250,8 @@ void vTaskFast(void *pvParameters) {
  */
 void vTaskMedium(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(5) > 0 ? pdMS_TO_TICKS(5) : 1;  // Min 1 tick
-    
+    const TickType_t xFrequency = pdMS_TO_TICKS(5) > 0 ? pdMS_TO_TICKS(5) : 1;
+
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
             if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 200) {
@@ -290,7 +288,7 @@ void vTaskMedium(void *pvParameters) {
  */
 void vTaskSlow(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(20);  // 20ms = 50Hz
+    const TickType_t xFrequency = pdMS_TO_TICKS(20);
 
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
@@ -509,17 +507,6 @@ extern "C" void app_main(void) {
     uint32_t acq_start_ms = get_timestamp_ms();
     ESP_LOGI(TAG, "Acquisition START at %"PRIu32" ms since boot", acq_start_ms);
     
-<<<<<<< HEAD
-    // // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
-    // for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
-    //     vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
-    //     ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
-    //              hour, get_timestamp_ms() - acq_start_ms);
-    // }
-
-    // Testing: run for 15 seconds
-    vTaskDelay(pdMS_TO_TICKS(15 * 1000));
-=======
     // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
     if (!TESTING_SHORT_DURATION) { 
         for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
@@ -529,9 +516,8 @@ extern "C" void app_main(void) {
         }
     } else {
         // Testing: run for 15 seconds
-        vTaskDelay(pdMS_TO_TICKS(60 * 1000));
+        vTaskDelay(pdMS_TO_TICKS(15 * 1000));
     }
->>>>>>> 17b34215380722124cf59adeec5fe93b33c1d92d
 
     uint32_t acq_end_ms = get_timestamp_ms();
     uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;

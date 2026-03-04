@@ -4,8 +4,8 @@
 
 - ✅ **Dual-core Architecture**: Core 0 handles data acquisition, Core 1 handles SD card storage
 - ✅ **Multiple Sampling Rates**: Supports 1kHz / 200Hz / 50Hz sampling rates
-- ✅ **Hybrid Interfaces**: SPI, I2C, ADC, and GPIO hardware interfaces
-- ✅ **OOP Design**: Sensor abstraction implemented in C
+- ✅ **Hybrid Interfaces**: SPI, I2C, I2S, ADC, and GPIO hardware interfaces
+- ✅ **OOP Design**: Sensor abstraction implemented in C with C++ integration
 - ✅ **High Performance**: Uses FreeRTOS queues and buffering mechanism
 - ✅ **Scalable**: Modular design, easy to add new sensors
 
@@ -13,14 +13,16 @@
 
 **MCU**: ESP32-S3 (Dual-Core Xtensa LX7 @ 240MHz)
 
-**Sensors**:
-- BNO085 (9-DOF IMU, SPI, 1kHz, **individually tested OK**)
-- SW-420 (Vibration, GPIO, 1kHz, **individually tested OK**)
-- ACS723 (Current, ADC, 200Hz, **individually tested OK**)
-- MPL3115A2 (Pressure, I2C, 50Hz, **individually tested OK**)
-- MCP9808 (Temperature, I2C, 50Hz, **individually tested OK**)
-- INMP441 (Microphone, I2S, effective 1kHz, **individually tested OK**)
-- BPW34 (Photodiode, ADC, 200Hz, **driver implemented, not yet tested**)
+**Sensors** (9 sensor channels):
+- BNO085 Accelerometer (3-axis, SPI, 1kHz)
+- BNO085 Gyroscope (3-axis, SPI, 1kHz)
+- BNO085 Magnetometer (3-axis, SPI, 1kHz)
+- SW-420 (Vibration, GPIO, 1kHz)
+- ACS723 (Current, ADC via ADS1115, 200Hz)
+- MPL3115A2 (Pressure, I2C, 50Hz)
+- MCP9808 (Temperature, I2C, 50Hz)
+- INMP441 (Microphone, I2S, 1kHz effective)
+- 751-1015-ND (Photodiode, ADC via ADS1115, 200Hz)
 
 **Storage**: SD Card (SDMMC 4-bit, 40MHz)
 
@@ -28,11 +30,12 @@
 
 ```
 ├── main/
-│   └── main_dual_core.c          # Main program (dual-core)
+│   └── main_dual_core.cpp        # Main program (dual-core, C++)
 │
 └── components/
     ├── sensor_hal/               # Hardware abstraction layer
-    ├── drivers/                  # Sensor drivers (7 sensors)
+    ├── drivers/                  # Sensor drivers (11 driver files)
+    ├── esp32_BNO08x/             # BNO085 library (C++)
     ├── data_types/               # Data structures & metadata
     └── sd_storage/               # SD card storage module
 ```
@@ -42,6 +45,10 @@
 ```
 Sensors → Drivers → FreeRTOS Queues (Core 0 → Core 1) → SD Card
          1kHz/200Hz/50Hz         Buffered Write          Binary Files
+
+Fast (1kHz):    Accelerometer, Gyroscope, Magnetometer, Vibration, Microphone
+Medium (200Hz): Current, Photodiode
+Slow (50Hz):    Pressure, Temperature
 ```
 
 ## Output Format
@@ -50,7 +57,7 @@ Each run session creates a directory with:
 
 ```
 /sdcard/RUN_XXX/
-├── fast_data.bin       # 1kHz data (IMU + Vibration + Microphone)
+├── fast_data.bin       # 1kHz data (Accel + Gyro + Mag + Vibration + Mic)
 ├── medium_data.bin     # 200Hz data (Current + Photodiode)
 ├── slow_data.bin       # 50Hz data (Pressure + Temperature)
 ├── meta.json           # Session metadata
@@ -67,18 +74,43 @@ Each run session creates a directory with:
 
 ### 2. Configure Hardware
 
-Edit `main/main_dual_core.c` to set actual pin configurations:
+Edit `main/main_dual_core.cpp` to set actual pin configurations:
 
-```c
-// Update these based on your PCB design
-static spi_config_t bno085_spi_cfg = {
-    .spi_host = 2,
-    .cs_pin = 5,      // Set actual pins
-    .sclk_pin = 18,
-    .mosi_pin = 23,
-    .miso_pin = 19
+```cpp
+// BNO085 - SPI Configuration
+// CS: GPIO37, SCLK: GPIO38, MOSI: GPIO40, MISO: GPIO39, INT: GPIO5, RST: GPIO6
+static bno08x_config_t bno085_spi_cfg = {
+    .io_mosi = GPIO_NUM_40,
+    .io_miso = GPIO_NUM_39,
+    .io_sclk = GPIO_NUM_38,
+    .io_cs   = GPIO_NUM_37,
+    .io_int  = GPIO_NUM_5,
+    .io_rst  = GPIO_NUM_6,
+    .spi_peripheral = SPI3_HOST
 };
-// ... configure other sensors
+
+// SW-420 Vibration - GPIO Configuration
+static vibration_gpio_config_t vibration_gpio_cfg = {
+    .gpio_pin = 16
+};
+
+// I2C Bus (shared by MPL3115A2 and MCP9808)
+// SDA: GPIO17, SCL: GPIO18
+static hal_i2c_config_t mpl3115_i2c_cfg = {
+    .i2c_port = 0,
+    .sda_pin = 17,
+    .scl_pin = 18,
+    .device_addr = 0x60
+};
+
+// INMP441 Microphone - I2S Configuration
+static inmp441_i2s_config_t inmp441_i2s_cfg = {
+    .i2s_port = 0,
+    .bck_pin = 45,
+    .ws_pin = 47,
+    .data_in_pin = 48,
+    .sample_rate_hz = 16000
+};
 ```
 
 ### 3. Build and Flash
@@ -108,10 +140,28 @@ typedef struct SensorContext {
     int id;
     sensor_type_t type;
     int sampling_rate_hz;
-    void *hw_config;                    // Polymorphic config
+    bool enabled;                   // true = active, false = skip
+    void *hw_config;                // Polymorphic config
     bool (*init)(struct SensorContext *ctx);      // Virtual init
     bool (*read_sample)(struct SensorContext *ctx, float *data_out);
 } SensorContext_t;
+```
+
+Example sensor configuration:
+
+```cpp
+static SensorContext_t my_sensors[NUM_SENSORS] = {
+    {
+        .id = 9,
+        .type = SENSOR_TYPE_ACCELEROMETER,
+        .sampling_rate_hz = 1000,
+        .enabled = true,
+        .hw_config = &bno085_imu,
+        .init = accel_init,
+        .read_sample = accel_read_sample
+    },
+    // ... more sensors
+};
 ```
 
 ### Task Pinning
@@ -124,6 +174,10 @@ Tasks are pinned to specific cores for optimal performance:
 ### Buffered Writing
 
 4KB buffers with periodic flushing (every 100ms) ensure efficient SD card writes.
+
+### BNO085 Integration
+
+The BNO085 IMU is integrated via the `esp32_BNO08x` C++ library, providing three separate sensor channels (accelerometer, gyroscope, magnetometer) that share the same SPI interface but are treated as independent sensors in the data pipeline.
 
 ## API Overview
 
@@ -161,7 +215,8 @@ void sd_storage_deinit(void);
 | Metric | Value |
 |--------|-------|
 | Max Sample Rate | 1kHz |
-| Total Data Rate | ~35 KB/s |
+| Sensor Channels | 9 (3 IMU + 6 others) |
+| Total Data Rate | ~45 KB/s |
 | Queue Latency | < 100ms |
 | SD Flush Interval | 100ms or buffer full |
 
@@ -169,9 +224,9 @@ void sd_storage_deinit(void);
 
 ### Sampling Duration
 
-Modify in `main/main_dual_core.c`:
+Modify in `main/main_dual_core.cpp`:
 
-```c
+```cpp
 vTaskDelay(pdMS_TO_TICKS(30000));  // Current: 30 seconds
 ```
 
@@ -195,20 +250,13 @@ Change in `components/sd_storage/include/sd_storage.h`:
 
 ## Development Status
 
-**Current State**: Core framework and SD storage are complete. All 7 sensors are integrated into the HAL. All sensors except the photodiode have been individually tested and work.
-**Pin configuration**: The current pin assignments are non-conflicting. Some pins have been adjusted and are not yet verified on hardware; confirm against your PCB before production use.
+**Current State**: Core framework and SD storage are complete. All 9 sensor channels are integrated into the HAL. All sensors have been tested and worked well together.
 
 **Known Issues**:
-- **Packet loss**: When multiple sensors run concurrently, packet loss may occur; investigation and mitigation ongoing.
-- **IMU data structure**: IMU pipeline currently provides acceleration only; extend or refactor the data structure as needed for future use (e.g. gyroscope, magnetometer, quaternion).
+- **BNO085 sampling frequncy**
 
 
 ## Contributing
 
-All sensor drivers are implemented. Current priorities:
-
-1. **Hardware testing**: Test photodiode with real hardware (all other sensors already individually tested)
-2. **Packet loss**: Investigate and fix packet loss when multiple sensors run simultaneously
-3. **IMU data structure**: Update BNO085 data structure based on actual data requirements (e.g. add gyro, quaternion)
-4. **Error handling**: Add recovery mechanisms for sensor failures and SD write errors
+All sensor drivers are implemented.
 
