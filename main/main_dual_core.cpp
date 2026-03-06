@@ -38,8 +38,9 @@ extern "C" {
 }
 
 #define STATUS_LED_PIN GPIO_NUM_4
+#define BUTTON_PIN GPIO_NUM_46
 
-static const bool TESTING_SHORT_DURATION = true;
+static const bool TESTING_SHORT_DURATION = true; // [DEPRECATED]: Use button press to stop daq instead
 
 static const char *TAG = "SHIELD";
 
@@ -491,6 +492,16 @@ extern "C" void app_main(void) {
     };
     gpio_config(&led_cfg);
 
+    // Configure button input (GPIO 46) - press to stop data acquisition
+    gpio_config_t btn_conf = {
+        .pin_bit_mask = (1ULL << BUTTON_PIN),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&btn_conf);
+
     // Set to running state
     system_state = DAQ_STATE_RUNNING;
     gpio_set_level(STATUS_LED_PIN, 1);
@@ -507,17 +518,23 @@ extern "C" void app_main(void) {
     uint32_t acq_start_ms = get_timestamp_ms();
     ESP_LOGI(TAG, "Acquisition START at %"PRIu32" ms since boot", acq_start_ms);
     
-    // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
-    if (!TESTING_SHORT_DURATION) { 
-        for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
-            vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
-            ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
-                    hour, get_timestamp_ms() - acq_start_ms);
-        }
-    } else {
-        // Testing: run for 15 seconds
-        vTaskDelay(pdMS_TO_TICKS(15 * 1000));
+    // Continue to run data acquisition until button press
+    // [TODO]: Consider making it periodically write to SD card during run instead of
+    // waiting until the end, to avoid data loss on power failure and to handle long durations better
+    while (gpio_get_level(BUTTON_PIN) && system_state == DAQ_STATE_RUNNING) {
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
+    // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
+    // if (!TESTING_SHORT_DURATION) { 
+    //     for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
+    //         vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
+    //         ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
+    //                 hour, get_timestamp_ms() - acq_start_ms);
+    //     }
+    // } else {
+    //     // Testing: run for 15 seconds
+    //     vTaskDelay(pdMS_TO_TICKS(15 * 1000));
+    // }
 
     uint32_t acq_end_ms = get_timestamp_ms();
     uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;
