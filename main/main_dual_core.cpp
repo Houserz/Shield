@@ -37,7 +37,7 @@ extern "C" {
     bool mag_read_sample(SensorContext_t *ctx, float *data_out);
 }
 
-#define STATUS_LED_PIN GPIO_NUM_4
+#define STATUS_LED_PIN GPIO_NUM_8
 #define BUTTON_PIN GPIO_NUM_46
 
 static const bool TESTING_SHORT_DURATION = true; // [DEPRECATED]: Use button press to stop daq instead
@@ -427,6 +427,7 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0));
     i2c_reset_tx_fifo(I2C_NUM_0);
     i2c_reset_rx_fifo(I2C_NUM_0);
+    ESP_LOGI(TAG, "I2C master initialized on port %d", I2C_NUM_0);
     vTaskDelay(pdMS_TO_TICKS(100));  // give devices time to settle
 
 
@@ -518,14 +519,13 @@ extern "C" void app_main(void) {
     uint32_t acq_start_ms = get_timestamp_ms();
     ESP_LOGI(TAG, "Acquisition START at %"PRIu32" ms since boot", acq_start_ms);
     
-    // Continue to run data acquisition until button press
-    // [TODO]: Consider making it periodically write to SD card during run instead of
-    // waiting until the end, to avoid data loss on power failure and to handle long durations better
-    while (gpio_get_level(BUTTON_PIN) && system_state == DAQ_STATE_RUNNING) {
-        vTaskDelay(pdMS_TO_TICKS(100));
+    // Continue to run data acquisition until button press or 15 hours have elapsed
+    while (gpio_get_level(BUTTON_PIN) && system_state == DAQ_STATE_RUNNING &&
+           (get_timestamp_ms() - acq_start_ms < 15UL * 3600000UL)) {
+      vTaskDelay(pdMS_TO_TICKS(100));
     }
     // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
-    // if (!TESTING_SHORT_DURATION) { 
+    // if (!TESTING_SHORT_DURATION) {
     //     for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
     //         vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
     //         ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
