@@ -37,7 +37,7 @@ extern "C" {
     bool mag_read_sample(SensorContext_t *ctx, float *data_out);
 }
 
-#define STATUS_LED_PIN GPIO_NUM_8
+#define STATUS_LED_PIN GPIO_NUM_4
 #define BUTTON_PIN GPIO_NUM_46
 
 static const bool TESTING_SHORT_DURATION = true; // [DEPRECATED]: Use button press to stop daq instead
