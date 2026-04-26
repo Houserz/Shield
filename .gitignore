@@ -25,3 +25,5 @@ managed_components/
 
 # Logs
 *.log
+
+docs/  
