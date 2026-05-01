@@ -178,7 +178,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 7,
         .type = SENSOR_TYPE_MAGNETOMETER,
         .sampling_rate_hz = 1000,
-        .enabled = false, // [TEMP DEBUG] BNO085 disabled
+        .enabled = true,
         .hw_config = &bno085_imu,
         .init = mag_init,
         .read_sample = mag_read_sample
@@ -188,7 +188,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 8,
         .type = SENSOR_TYPE_GYROSCOPE,
         .sampling_rate_hz = 1000,
-        .enabled = false, // [TEMP DEBUG] BNO085 disabled
+        .enabled = true,
         .hw_config = &bno085_imu,
         .init = gyro_init,
         .read_sample = gyro_read_sample
@@ -198,7 +198,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 9,
         .type = SENSOR_TYPE_ACCELEROMETER,
         .sampling_rate_hz = 1000,
-        .enabled = false, // [TEMP DEBUG] BNO085 disabled
+        .enabled = true,
         .hw_config = &bno085_imu,
         .init = accel_init,
         .read_sample = accel_read_sample
@@ -431,15 +431,11 @@ extern "C" void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(100));  // give devices time to settle
 
 
-    // [TEMP DEBUG] BNO085 init skipped to isolate hang issue.
-    // The hang is suspected to be in sh2_getProdIds() (no timeout in SH2 lib).
-    // Re-enable after BNO085 wiring/PS0/PS1/INT-pullup verified.
-    // if (!bno085_imu.initialize()) {
-    //     ESP_LOGE(TAG, "BNO085 initialize() FAILED - aborting");
-    //     return;
-    // }
-    // ESP_LOGI(TAG, "BNO085 initialized OK");
-    ESP_LOGW(TAG, "BNO085 init SKIPPED (debug isolation)");
+    if (!bno085_imu.initialize()) {
+        ESP_LOGE(TAG, "BNO085 initialize() FAILED - aborting");
+        return;
+    }
+    ESP_LOGI(TAG, "BNO085 initialized OK");
 
     // Initialize all sensors
     const char *sensor_names[] = {"SW-420 Vibration", "ACS723 Current", "MPL3115 Pressure", "MCP9808 Temp",
