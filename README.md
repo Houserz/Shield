@@ -260,3 +260,11 @@ Change in `components/sd_storage/include/sd_storage.h`:
 
 All sensor drivers are implemented.
 
+## Spike Filter (BNO085)
+
+The IMU drivers apply an in-place real-time spike filter (robust z-score on first differences + full-scale gate, ZOH repair) to all 9 channels (accel/gyro/mag × xyz).
+Hold the device still for the first **5 seconds** after boot for self-calibration; bias and σ_ref are then locked for the rest of the run.
+Per-second debug lines appear under tag `spike` (e.g. `accel-x: bias=… sigma_ref=… spikes_total=…`).
+To disable, set `#define ENABLE_SPIKE_FILTER 0` in `components/spike_filter/include/spike_filter.h` and rebuild.
+The optional Hampel-window backstop is gated by `SPIKE_FILTER_ENABLE_HAMPEL` (off by default).
+
