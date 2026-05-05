@@ -37,7 +37,7 @@ extern "C" {
     bool mag_read_sample(SensorContext_t *ctx, float *data_out);
 }
 
-#define STATUS_LED_PIN GPIO_NUM_4
+#define STATUS_LED_PIN GPIO_NUM_7
 #define BUTTON_PIN GPIO_NUM_46
 
 static const bool TESTING_SHORT_DURATION = true; // [DEPRECATED]: Use button press to stop daq instead
@@ -524,7 +524,7 @@ extern "C" void app_main(void) {
            (get_timestamp_ms() - acq_start_ms < 15UL * 3600000UL)) {
       vTaskDelay(pdMS_TO_TICKS(100));
     }
-    // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
+    //Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
     // if (!TESTING_SHORT_DURATION) {
     //     for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
     //         vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
@@ -533,7 +533,7 @@ extern "C" void app_main(void) {
     //     }
     // } else {
     //     // Testing: run for 15 seconds
-    //     vTaskDelay(pdMS_TO_TICKS(15 * 1000));
+    //     vTaskDelay(pdMS_TO_TICKS(120 * 1000));
     // }
 
     uint32_t acq_end_ms = get_timestamp_ms();
