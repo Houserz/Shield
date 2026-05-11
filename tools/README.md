@@ -14,11 +14,15 @@ pip install -r tools/requirements.txt
 
 ### USB (primary)
 
-Plug the ESP32-S3 USB cable into your laptop. Then:
+You can start the viewer before the ESP32-S3 is plugged in or streaming:
 
 ```bash
 python tools/pc_viewer.py
 ```
+
+The window opens immediately, creates the output `stream.bin`, and waits
+until a matching ESP32 serial port appears. If the cable is unplugged during
+a run, the reader keeps the window open and reconnects when the port returns.
 
 If auto-detection picks the wrong port, override:
 
@@ -30,12 +34,18 @@ python tools/pc_viewer.py --serial /dev/ttyACM0            # Linux
 
 ### Wi-Fi (backup, no USB cable)
 
-1. On your laptop, join Wi-Fi `SHIELD_DAQ` (password `shield1234`).
-2. Run:
+Start the viewer in TCP mode before or after joining the ESP32 SoftAP:
 
 ```bash
 python tools/pc_viewer.py --tcp 192.168.4.1
 ```
+
+The window opens immediately and retries the TCP connection until the ESP32
+SoftAP/server is reachable. If the connection drops, it returns to reconnect
+mode without closing the recording window.
+
+To connect over Wi-Fi, join `SHIELD_DAQ` (password `shield1234`) on your
+laptop when the ESP32 SoftAP is available.
 
 > Joining the SoftAP disconnects you from school Wi-Fi for the duration of
 > the session. The viewer doesn't need internet, so this is fine.
@@ -81,27 +91,31 @@ v = arr['value'][mask]
 - During Wi-Fi mode, ESP32 stops Wi-Fi when the laptop disconnects from
   the SoftAP and resumes when it reconnects; no power-cycle needed.
 
-## Toggling USB / Wi-Fi at build time
+## Toggling USB / Wi-Fi
 
-Defaults: USB on, Wi-Fi off (Wi-Fi radio adds ~100 mA average).
+Edit `components/streamer/include/streamer_config.h`, then run a normal
+build:
 
 ```bash
-# default build:                  USB on,  Wi-Fi off
-idf.py build
-
-# both transports on:
-idf.py -DSTREAMER_USB=1 -DSTREAMER_WIFI=1 build
-
-# Wi-Fi only (no USB streaming):
-idf.py -DSTREAMER_USB=0 -DSTREAMER_WIFI=1 build
-
-# both off (acquisition + SD only, no streaming):
-idf.py -DSTREAMER_USB=0 -DSTREAMER_WIFI=0 build
+idf.py build flash monitor
 ```
 
-If you change these flags after a previous build, run `idf.py fullclean`
-once so CMake re-evaluates `REQUIRES`.
+Common modes:
 
-You can also edit the defaults directly in
-`components/streamer/include/streamer.h` (`STREAMER_ENABLE_USB` /
-`STREAMER_ENABLE_WIFI`).
+```c
+// Wi-Fi only
+#define STREAMER_ENABLE_USB   0
+#define STREAMER_ENABLE_WIFI  1
+
+// USB data cable only
+#define STREAMER_ENABLE_USB   1
+#define STREAMER_ENABLE_WIFI  0
+
+// Both transports
+#define STREAMER_ENABLE_USB   1
+#define STREAMER_ENABLE_WIFI  1
+
+// SD only, no live stream
+#define STREAMER_ENABLE_USB   0
+#define STREAMER_ENABLE_WIFI  0
+```

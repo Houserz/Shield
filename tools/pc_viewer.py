@@ -90,6 +90,7 @@ HISTORY_BIN_SEC  = 1.0
 PLOT_UPDATE_HZ   = 15
 HISTORY_MAX_BINS = 60_000
 LIVE_RING_MAX    = 200_000
+RECONNECT_DELAY_SEC = 1.0
 
 
 # ====================================================================
@@ -215,11 +216,15 @@ class TcpSource(Source):
     def __init__(self, host: str, port: int = 3333):
         self.host = host
         self.port = port
-        self.sock = socket.create_connection((host, port), timeout=5.0)
+        self.sock = socket.create_connection((host, port), timeout=2.0)
         self.sock.settimeout(1.0)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     def read(self, n: int) -> bytes:
-        try: return self.sock.recv(n)
+        try:
+            data = self.sock.recv(n)
+            if data == b"":
+                raise ConnectionError("TCP peer closed")
+            return data
         except socket.timeout: return b""
     def close(self):
         try: self.sock.close()
@@ -237,17 +242,23 @@ def autodetect_serial() -> Optional[str]:
     return None
 
 
-def open_source(args) -> Source:
+def target_name(args: argparse.Namespace) -> str:
+    if args.tcp:
+        host, _, port = args.tcp.partition(":")
+        return f"tcp:{host}:{port or 3333}"
+    if args.serial:
+        return f"serial:{args.serial}"
+    return "serial:auto"
+
+
+def open_source(args: argparse.Namespace) -> Source:
     if args.tcp:
         host, _, port = args.tcp.partition(":")
         port = int(port) if port else 3333
-        print(f"[viewer] opening TCP {host}:{port} ...")
         return TcpSource(host, port)
     port = args.serial or autodetect_serial()
     if not port:
-        print("[viewer] no serial port found; pass --serial <port> or --tcp <ip>")
-        sys.exit(2)
-    print(f"[viewer] opening serial {port} @ {args.baud} ...")
+        raise ConnectionError("no matching serial port found")
     return SerialSource(port, args.baud)
 
 
@@ -255,9 +266,10 @@ def open_source(args) -> Source:
 # Reader thread
 # ====================================================================
 class Reader(threading.Thread):
-    def __init__(self, src: Source, channels: dict, dump_path: Path):
+    def __init__(self, args: argparse.Namespace, channels: dict, dump_path: Path):
         super().__init__(daemon=True)
-        self.src = src
+        self.args = args
+        self.src: Optional[Source] = None
         self.channels = channels
         self.dump_path = dump_path
         self.stop_flag = False
@@ -266,6 +278,43 @@ class Reader(threading.Thread):
         self.last_seq: Optional[int] = None
         self.t0_wall = time.time()
         self.t0_ms: Optional[int] = None
+        self.state_lock = threading.Lock()
+        self.src_label = target_name(args)
+        self.connection_status = "waiting for device"
+
+    def _set_connection_status(self, src_label: str, status: str):
+        with self.state_lock:
+            self.src_label = src_label
+            self.connection_status = status
+
+    def connection_snapshot(self) -> tuple[str, str]:
+        with self.state_lock:
+            return self.src_label, self.connection_status
+
+    def _connect_once(self) -> bool:
+        label = target_name(self.args)
+        self._set_connection_status(label, "connecting")
+        try:
+            self.src = open_source(self.args)
+        except Exception as exc:
+            self.src = None
+            self._set_connection_status(label, f"waiting: {exc}")
+            return False
+
+        self.last_seq = None
+        self._set_connection_status(self.src.name(), "connected")
+        print(f"[reader] connected -> {self.src.name()}")
+        return True
+
+    def _close_source(self, reason: str):
+        if self.src is None:
+            return
+        src_name = self.src.name()
+        self.src.close()
+        self.src = None
+        self.last_seq = None
+        self._set_connection_status(target_name(self.args), f"reconnecting: {reason}")
+        print(f"[reader] disconnected from {src_name}: {reason}")
 
     def parse_buffer(self, buf: bytearray, fout):
         i = 0
@@ -292,7 +341,7 @@ class Reader(threading.Thread):
                     self.dropped_seq += gap
             self.last_seq = seq
 
-            if self.t0_ms is None:
+            if self.t0_ms is None or ts_ms < self.t0_ms:
                 self.t0_ms = ts_ms
             t_sec = (ts_ms - self.t0_ms) / 1000.0
 
@@ -308,14 +357,27 @@ class Reader(threading.Thread):
         with open(self.dump_path, "ab", buffering=64 * 1024) as fout:
             print(f"[reader] writing -> {self.dump_path}")
             while not self.stop_flag:
-                chunk = self.src.read(4096)
+                if self.src is None:
+                    if not self._connect_once():
+                        time.sleep(RECONNECT_DELAY_SEC)
+                    continue
+
+                try:
+                    chunk = self.src.read(4096)
+                except Exception as exc:
+                    buf.clear()
+                    self._close_source(str(exc))
+                    time.sleep(RECONNECT_DELAY_SEC)
+                    continue
+
                 if not chunk:
                     continue
                 buf.extend(chunk)
                 if len(buf) > 64 * 1024:
                     del buf[: len(buf) - FRAME_SIZE]
                 self.parse_buffer(buf, fout)
-        self.src.close()
+        if self.src is not None:
+            self.src.close()
 
 
 # ====================================================================
@@ -521,8 +583,9 @@ class Viewer(QtWidgets.QMainWindow):
         # status line
         elapsed = time.time() - self.reader.t0_wall
         rate = self.reader.frames / elapsed if elapsed > 0 else 0.0
+        src_name, conn_status = self.reader.connection_snapshot()
         self.lbl_status.setText(
-            f"src={self.reader.src.name()}  frames={self.reader.frames}  "
+            f"src={src_name}  status={conn_status}  frames={self.reader.frames}  "
             f"dropped_seq={self.reader.dropped_seq}  rate={rate:7.1f} pkt/s  "
             f"t={latest_t:8.2f}s  view={self._view_mode}"
         )
@@ -546,8 +609,6 @@ def main():
     run_dir.mkdir(parents=True, exist_ok=True)
     dump_path = run_dir / "stream.bin"
 
-    src = open_source(args)
-
     # Build channel buffer table mirroring SENSORS spec.
     channels: dict[tuple[int, int], ChannelBuf] = {}
     for sid, (name, axes, unit, _, _) in SENSORS.items():
@@ -557,7 +618,7 @@ def main():
             for ax_i, ax_name in enumerate(axes, start=1):
                 channels[(sid, ax_i)] = ChannelBuf(name=f"{name}.{ax_name}", unit=unit)
 
-    reader = Reader(src, channels, dump_path)
+    reader = Reader(args, channels, dump_path)
     reader.start()
 
     app = QtWidgets.QApplication(sys.argv)
