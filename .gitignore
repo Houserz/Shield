@@ -2,7 +2,7 @@
 build/
 dist/
 additional_content/
-tools/
+tools/parse_data.py
 sdkconfig
 sdkconfig.old
 *.pyc
