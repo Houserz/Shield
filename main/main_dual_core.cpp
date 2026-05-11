@@ -41,7 +41,7 @@ extern "C" {
 #define STATUS_LED_PIN GPIO_NUM_7
 #define BUTTON_PIN GPIO_NUM_46
 
-static const bool TESTING_SHORT_DURATION = true; // [DEPRECATED]: Use button press to stop daq instead
+static const bool TESTING_SHORT_DURATION = true; // true = 120 s test run; false = 15-hour run
 
 static const char *TAG = "SHIELD";
 
@@ -76,7 +76,7 @@ static bno08x_config_t bno085_spi_cfg = []() {
 static BNO08x bno085_imu(bno085_spi_cfg);
 
 // SW-420 - GPIO Configuration
-// GPIO10: digital input, no conflict with ADC or other peripherals
+// GPIO16: digital input, no conflict with ADC or other peripherals
 static vibration_gpio_config_t vibration_gpio_cfg = {
     .gpio_pin = 16
 };
@@ -85,27 +85,27 @@ static vibration_gpio_config_t vibration_gpio_cfg = {
 // I2C0 bus shared with MCP9808. Use 4.7kΩ external pull-ups on SDA/SCL.
 static hal_i2c_config_t mpl3115_i2c_cfg = {
     .i2c_port = 0,      // I2C_NUM_0
-    .sda_pin = 17,       // GPIO3
-    .scl_pin = 18,       // GPIO4
+    .sda_pin = 17,       // GPIO17
+    .scl_pin = 18,       // GPIO18
     .device_addr = 0x60 // MPL3115A2 default I2C address
 };
 
 // MCP9808 - I2C Configuration
-// Shares same I2C0 bus with MPL3115 (same SDA=3, SCL=4 pins)
+// Shares same I2C0 bus with MPL3115 (same SDA=17, SCL=18 pins)
 static hal_i2c_config_t mcp9808_i2c_cfg = {
     .i2c_port = 0,      // I2C_NUM_0 (shared with MPL3115)
-    .sda_pin = 17,       // GPIO3 (same as MPL3115)
-    .scl_pin = 18,       // GPIO4 (same as MPL3115)
+    .sda_pin = 17,       // GPIO17 (same as MPL3115)
+    .scl_pin = 18,       // GPIO18 (same as MPL3115)
     .device_addr = 0x18 // MCP9808 default I2C address
 };
 
 // INMP441 - I2S Configuration (high sample rate)
-// BCK/WS/SD use GPIO17/18/21 to avoid conflict with BNO085 INT=15 and RST=16
+// BCK/WS/SD use GPIO45/47/48 to avoid conflict with other peripherals
 static inmp441_i2s_config_t inmp441_i2s_cfg = {
     .i2s_port = 0,         // I2S_NUM_0
-    .bck_pin = 45,          // GPIO17 (bit clock)
-    .ws_pin = 47,           // GPIO18 (word select / LRCLK)
-    .data_in_pin = 48,      // GPIO21 (data input)
+    .bck_pin = 45,          // GPIO45 (bit clock)
+    .ws_pin = 47,           // GPIO47 (word select / LRCLK)
+    .data_in_pin = 48,      // GPIO48 (data input)
     .sample_rate_hz = 16000 // INMP441 typical; decimate to 1kHz logical rate
 };
 
@@ -493,7 +493,7 @@ extern "C" void app_main(void) {
     }
     ESP_LOGI(TAG, "FreeRTOS queues created OK");
 
-    // Configure status LED (GPIO 4) - on while acquiring, off when done
+    // Configure status LED (GPIO 7) - on while acquiring, off when done
     gpio_config_t led_cfg = {
         .pin_bit_mask = (1ULL << STATUS_LED_PIN),
         .mode = GPIO_MODE_OUTPUT,
@@ -542,7 +542,7 @@ extern "C" void app_main(void) {
                     hour, get_timestamp_ms() - acq_start_ms);
         }
     } else {
-        // Testing: run for 15 seconds
+        // Testing: run for 120 seconds
         vTaskDelay(pdMS_TO_TICKS(120 * 1000));
     }
 
@@ -580,4 +580,3 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Stream: usb_sent=%"PRIu32" wifi_sent=%"PRIu32" drops=%"PRIu32,
              streamer_get_sent_usb(), streamer_get_sent_wifi(), streamer_get_drops());
 }
-

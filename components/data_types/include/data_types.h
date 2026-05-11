@@ -12,23 +12,23 @@
 #include <stdbool.h>
 
 // ==================== Queue Configuration ====================
-#define FAST_QUEUE_SIZE     300     // 1kHz × 3 sensors (IMU, Vibration, Microphone) × 100ms buffer
-#define MEDIUM_QUEUE_SIZE   40      // 200Hz × 2 sensors (Current, Photodiode) × 100ms buffer
-#define SLOW_QUEUE_SIZE     10      // 50Hz × 2 sensors × 100ms buffer
+#define FAST_QUEUE_SIZE     300     // Fast-tier queue (accel/gyro/mag + vibration + microphone)
+#define MEDIUM_QUEUE_SIZE   40      // Medium-tier queue (current + photodiode)
+#define SLOW_QUEUE_SIZE     10      // Slow-tier queue (pressure + temperature)
 
 // ==================== Binary Data Packet Formats ====================
 
 /**
- * @brief Fast data record (IMU, Vibration, Microphone)
+ * @brief Fast data record (Accel/Gyro/Mag, Vibration, Microphone)
  * 
  * File: fast_data.bin
  * Sample rate: 1kHz
  * Size: 16 bytes/record
- * Sensor IDs: 0=IMU, 1=Vibration, 5=Microphone
+ * Sensor IDs: 1=Vibration, 5=Microphone, 7=Magnetometer, 8=Gyroscope, 9=Accelerometer
  */
 typedef struct __attribute__((packed)) {
     uint32_t timestamp_ms;    // Timestamp (milliseconds)
-    uint8_t sensor_id;        // Sensor ID (0=IMU, 1=Vibration, 5=Microphone)
+    uint8_t sensor_id;        // Sensor ID (1, 5, 7, 8, or 9)
     uint8_t reserved[3];      // Padding for alignment
     float data[3];            // Sensor data (scalar: data[0] only; vector: x,y,z)
 } fast_data_record_t;

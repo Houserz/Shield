@@ -29,20 +29,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "data_types.h"
-
-// ==================== Compile-time switches ====================
-// Override either of these via:
-//   1) Editing this header
-//   2) idf.py build -DSTREAMER_USB=1 -DSTREAMER_WIFI=0
-//   3) Adding -DSTREAMER_ENABLE_USB=0 to CFLAGS
-//
-// Defaults: USB on (cheap), Wi-Fi off (Wi-Fi radio adds ~100 mA).
-#ifndef STREAMER_ENABLE_USB
-#define STREAMER_ENABLE_USB  1
-#endif
-#ifndef STREAMER_ENABLE_WIFI
-#define STREAMER_ENABLE_WIFI 0
-#endif
+#include "streamer_config.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -24,7 +24,7 @@
 - INMP441 (Microphone, I2S, 1kHz effective)
 - 751-1015-ND (Photodiode, ADC via ADS1115, 200Hz)
 
-**Storage**: SD Card (SDMMC 4-bit, 40MHz)
+**Storage**: SD Card (SDSPI / SPI2 mode, firmware default clock)
 
 ## Project Structure
 
@@ -301,4 +301,3 @@ Hold the device still for the first **5 seconds** after boot for self-calibratio
 Per-second debug lines appear under tag `spike` (e.g. `accel-x: bias=… sigma_ref=… spikes_total=…`).
 To disable, set `#define ENABLE_SPIKE_FILTER 0` in `components/spike_filter/include/spike_filter.h` and rebuild.
 The optional Hampel-window backstop is gated by `SPIKE_FILTER_ENABLE_HAMPEL` (off by default).
-

@@ -132,6 +132,7 @@ bool sd_storage_init(void) {
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = SPI2_HOST;
+    // ESP-IDF reuses the SDMMC frequency constants for SDSPI host configuration.
     host.max_freq_khz = SDMMC_FREQ_DEFAULT;
 
     spi_bus_config_t bus_cfg = {
@@ -409,4 +410,3 @@ void sd_get_statistics(uint64_t *bytes_written, uint32_t *error_count) {
     if (bytes_written) *bytes_written = storage.total_bytes_written;
     if (error_count) *error_count = storage.write_error_count;
 }
-
