@@ -21,6 +21,7 @@ extern "C" {
     #include "sensor_hal.h"
     #include "data_types.h"
     #include "sd_storage.h"
+    #include "streamer.h"
     #include "driver/i2c.h"
     #include "driver/gpio.h"
     #include "freertos/FreeRTOS.h"
@@ -231,6 +232,8 @@ void vTaskFast(void *pvParameters) {
                     }
                 };
 
+                streamer_publish_fast(&msg.data);
+
                 if (xQueueSend(fast_queue, &msg, 0) != pdTRUE) {
                     statistics.queue_overruns++;
                 } else {
@@ -267,7 +270,9 @@ void vTaskMedium(void *pvParameters) {
                             .data = data
                         }
                     };
-                    
+
+                    streamer_publish_medium(&msg.data);
+
                     if (xQueueSend(medium_queue, &msg, 0) != pdTRUE) {
                         statistics.queue_overruns++;
                     } else {
@@ -305,7 +310,9 @@ void vTaskSlow(void *pvParameters) {
                             .data = data
                         }
                     };
-                    
+
+                    streamer_publish_slow(&msg.data);
+
                     if (xQueueSend(slow_queue, &msg, 0) != pdTRUE) {
                         statistics.queue_overruns++;
                     } else {
@@ -406,6 +413,9 @@ extern "C" void app_main(void) {
     // Initialize data types module
     data_types_init();
     ESP_LOGI(TAG, "Data types module initialized");
+
+    // Real-time streamer (USB primary + Wi-Fi SoftAP secondary)
+    streamer_init();
 
     // SD card initialization
     ESP_LOGI(TAG, "Initializing SD card...");
@@ -520,21 +530,21 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Acquisition START at %"PRIu32" ms since boot", acq_start_ms);
     
     // Continue to run data acquisition until button press or 15 hours have elapsed
-    while (gpio_get_level(BUTTON_PIN) && system_state == DAQ_STATE_RUNNING &&
-           (get_timestamp_ms() - acq_start_ms < 15UL * 3600000UL)) {
-      vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    //Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
-    // if (!TESTING_SHORT_DURATION) {
-    //     for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
-    //         vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
-    //         ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
-    //                 hour, get_timestamp_ms() - acq_start_ms);
-    //     }
-    // } else {
-    //     // Testing: run for 15 seconds
-    //     vTaskDelay(pdMS_TO_TICKS(120 * 1000));
+    // while (gpio_get_level(BUTTON_PIN) && system_state == DAQ_STATE_RUNNING &&
+    //        (get_timestamp_ms() - acq_start_ms < 15UL * 3600000UL)) {
+    //   vTaskDelay(pdMS_TO_TICKS(100));
     // }
+    //Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
+    if (!TESTING_SHORT_DURATION) {
+        for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
+            vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
+            ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
+                    hour, get_timestamp_ms() - acq_start_ms);
+        }
+    } else {
+        // Testing: run for 15 seconds
+        vTaskDelay(pdMS_TO_TICKS(120 * 1000));
+    }
 
     uint32_t acq_end_ms = get_timestamp_ms();
     uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;
@@ -567,5 +577,7 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Stats: fast=%"PRIu32" medium=%"PRIu32" slow=%"PRIu32" overruns=%"PRIu32" sd_errors=%"PRIu32,
              statistics.fast_samples, statistics.medium_samples, statistics.slow_samples,
              statistics.queue_overruns, statistics.sd_errors);
+    ESP_LOGI(TAG, "Stream: usb_sent=%"PRIu32" wifi_sent=%"PRIu32" drops=%"PRIu32,
+             streamer_get_sent_usb(), streamer_get_sent_wifi(), streamer_get_drops());
 }
 

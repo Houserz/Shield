@@ -32,19 +32,27 @@
 ├── main/
 │   └── main_dual_core.cpp        # Main program (dual-core, C++)
 │
-└── components/
-    ├── sensor_hal/               # Hardware abstraction layer
-    ├── drivers/                  # Sensor drivers (11 driver files)
-    ├── esp32_BNO08x/             # BNO085 library (C++)
-    ├── data_types/               # Data structures & metadata
-    └── sd_storage/               # SD card storage module
+├── components/
+│   ├── sensor_hal/               # Hardware abstraction layer
+│   ├── drivers/                  # Sensor drivers (11 driver files)
+│   ├── esp32_BNO08x/             # BNO085 library (C++)
+│   ├── data_types/               # Data structures & metadata
+│   ├── sd_storage/               # SD card storage module
+│   ├── spike_filter/             # Real-time spike removal for BNO085
+│   └── streamer/                 # USB CDC + Wi-Fi SoftAP live streamer
+│
+└── tools/
+    └── pc_viewer.py              # PC-side real-time viewer + recorder
 ```
 
 ## Data Flow
 
 ```
-Sensors → Drivers → FreeRTOS Queues (Core 0 → Core 1) → SD Card
-         1kHz/200Hz/50Hz         Buffered Write          Binary Files
+                        ┌─► FreeRTOS Queues (Core 0 → Core 1) ─► SD Card
+Sensors → Drivers ──────┤        Buffered Write                 Binary Files
+  1k/200/50 Hz          │
+                        └─► streamer fan-out ─► USB CDC ─► PC viewer
+                                              └► Wi-Fi TCP (SoftAP, optional)
 
 Fast (1kHz):    Accelerometer, Gyroscope, Magnetometer, Vibration, Microphone
 Medium (200Hz): Current, Photodiode
@@ -53,7 +61,9 @@ Slow (50Hz):    Pressure, Temperature
 
 ## Output Format
 
-Each run session creates a directory with:
+Two synchronous recordings are produced for every run.
+
+On the **SD card**:
 
 ```
 /sdcard/RUN_XXX/
@@ -62,6 +72,13 @@ Each run session creates a directory with:
 ├── slow_data.bin       # 50Hz data (Pressure + Temperature)
 ├── meta.json           # Session metadata
 └── events.log          # Event log
+```
+
+On the **PC** (when the viewer is running):
+
+```
+pc_runs/RUN_<timestamp>/
+└── stream.bin          # 16 B per packet, all channels interleaved
 ```
 
 ## Quick Start
@@ -128,6 +145,23 @@ idf.py -p /dev/ttyUSB0 flash
 # Monitor
 idf.py -p /dev/ttyUSB0 monitor
 ```
+
+## Real-Time Live Viewer
+
+USB-primary / Wi-Fi-backup live streaming to a laptop, with a PyQtGraph
+viewer that shows raw signal + rolling mean + ±1σ band per channel and
+mirrors every frame to `pc_runs/RUN_<timestamp>/stream.bin`.
+
+Quick start:
+
+```bash
+pip install -r tools/requirements.txt
+idf.py flash                      # do NOT add `monitor` while streaming
+python tools/pc_viewer.py
+```
+
+Build flags, Wi-Fi mode, offline replay and troubleshooting are documented
+in [`tools/README.md`](tools/README.md).
 
 ## Key Concepts
 

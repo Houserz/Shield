@@ -27,3 +27,4 @@ managed_components/
 *.log
 
 docs/  
+pc_runs/
