@@ -24,7 +24,7 @@
 #define SPIKE_FILTER_H
 
 #ifndef ENABLE_SPIKE_FILTER
-#define ENABLE_SPIKE_FILTER 1
+#define ENABLE_SPIKE_FILTER 0
 #endif
 
 // Optional Hampel-window backstop. Default off; flip to 1 to enable.

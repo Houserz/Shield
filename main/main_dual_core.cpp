@@ -686,21 +686,21 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Acquisition START at %"PRIu32" ms since boot", acq_start_ms);
     
     // Continue to run data acquisition until button press or 15 hours have elapsed
-    // while (gpio_get_level(BUTTON_PIN) && system_state == DAQ_STATE_RUNNING &&
-    //        (get_timestamp_ms() - acq_start_ms < 15UL * 3600000UL)) {
-    //   vTaskDelay(pdMS_TO_TICKS(100));
-    // }
-    //Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
-    if (!TESTING_SHORT_DURATION) {
-        for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
-            vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
-            ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
-                    hour, get_timestamp_ms() - acq_start_ms);
-        }
-    } else {
-        // Testing: run for 120 seconds
-        vTaskDelay(pdMS_TO_TICKS(120 * 1000));
+    while (gpio_get_level(BUTTON_PIN) && system_state == DAQ_STATE_RUNNING &&
+           (get_timestamp_ms() - acq_start_ms < 15UL * 3600000UL)) {
+      vTaskDelay(pdMS_TO_TICKS(100));
     }
+    //Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow
+    // if (!TESTING_SHORT_DURATION) {
+    //     for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
+    //         vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
+    //         ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
+    //                 hour, get_timestamp_ms() - acq_start_ms);
+    //     }
+    // } else {
+    //     // Testing: run for 120 seconds
+    //     vTaskDelay(pdMS_TO_TICKS(120 * 1000));
+    // }
 
     uint32_t acq_end_ms = get_timestamp_ms();
     uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;
