@@ -6,6 +6,8 @@
 static const char *TAG = "bno085_accel";
 static BNO08x *imu = nullptr;
 
+static constexpr uint32_t kAccelReportIntervalUs = 4000UL; // BNO085 effective limit is ~250 Hz
+
 #if ENABLE_SPIKE_FILTER
 // Effective accel rate from BNO085 is ~250 Hz; 5 s calibration => 1250 samples.
 // Add headroom so target == fs*calib_seconds always fits.
@@ -41,7 +43,7 @@ extern "C" bool accel_init(SensorContext_t *ctx) {
     }
 
     imu = (BNO08x *)ctx->hw_config;
-    imu->rpt.accelerometer.enable(1000UL);
+    imu->rpt.accelerometer.enable(kAccelReportIntervalUs);
     ESP_LOGI(TAG, "Accelerometer enabled");
 
 #if ENABLE_SPIKE_FILTER
@@ -64,10 +66,32 @@ extern "C" bool accel_read_sample(SensorContext_t *ctx, float *data_out) {
     data_out[1] = d.y;
     data_out[2] = d.z;
 
+    return true;
+}
+
+extern "C" bool accel_process_sample(SensorContext_t *ctx, const float *raw_in, float *processed_out, uint8_t *flags_out) {
+    (void)ctx;
+    if (raw_in == NULL || processed_out == NULL || flags_out == NULL) return false;
+
+    processed_out[0] = raw_in[0];
+    processed_out[1] = raw_in[1];
+    processed_out[2] = raw_in[2];
+    *flags_out = DATA_FLAG_PROCESSED_SAME_AS_RAW;
+
 #if ENABLE_SPIKE_FILTER
-    data_out[0] = s_filt_ax.update(data_out[0]);
-    data_out[1] = s_filt_ay.update(data_out[1]);
-    data_out[2] = s_filt_az.update(data_out[2]);
+    bool sx = false;
+    bool sy = false;
+    bool sz = false;
+    processed_out[0] = s_filt_ax.update(raw_in[0], &sx);
+    processed_out[1] = s_filt_ay.update(raw_in[1], &sy);
+    processed_out[2] = s_filt_az.update(raw_in[2], &sz);
+    *flags_out = DATA_FLAG_FILTER_ACTIVE;
+    if (sx || sy || sz) {
+        *flags_out |= DATA_FLAG_FILTER_SPIKE;
+    }
+    if (processed_out[0] == raw_in[0] && processed_out[1] == raw_in[1] && processed_out[2] == raw_in[2]) {
+        *flags_out |= DATA_FLAG_PROCESSED_SAME_AS_RAW;
+    }
     s_filt_ax.debug_log_periodic("accel-x");
 #endif
 

@@ -14,9 +14,9 @@
 **MCU**: ESP32-S3 (Dual-Core Xtensa LX7 @ 240MHz)
 
 **Sensors** (9 sensor channels):
-- BNO085 Accelerometer (3-axis, SPI, 1kHz)
-- BNO085 Gyroscope (3-axis, SPI, 1kHz)
-- BNO085 Magnetometer (3-axis, SPI, 1kHz)
+- BNO085 Accelerometer (3-axis, SPI, fast tier, ~250Hz effective)
+- BNO085 Gyroscope (3-axis, SPI, fast tier, ~100Hz effective)
+- BNO085 Magnetometer (3-axis, SPI, fast tier, ~100Hz effective)
 - SW-420 (Vibration, GPIO, 1kHz)
 - ACS723 (Current, ADC via ADS1115, 200Hz)
 - MPL3115A2 (Pressure, I2C, 50Hz)
@@ -67,18 +67,31 @@ On the **SD card**:
 
 ```
 /sdcard/RUN_XXX/
-├── fast_data.bin       # 1kHz data (Accel + Gyro + Mag + Vibration + Mic)
-├── medium_data.bin     # 200Hz data (Current + Photodiode)
-├── slow_data.bin       # 50Hz data (Pressure + Temperature)
+├── fast_data.bin       # fast-tier raw+processed V2 records
+├── medium_data.bin     # medium-tier raw+processed V2 records
+├── slow_data.bin       # slow-tier raw+processed V2 records
 ├── meta.json           # Session metadata
 └── events.log          # Event log
+```
+
+Each SD data file contains packed `sensor_data_record_v2_t` records:
+
+```c
+typedef struct __attribute__((packed)) {
+    uint32_t timestamp_ms;
+    uint8_t  sensor_id;
+    uint8_t  kind;        // 0=raw, 1=processed
+    uint8_t  axis_count;  // scalar=1, vector=3
+    uint8_t  flags;       // DATA_FLAG_* bits
+    float    data[3];
+} sensor_data_record_v2_t; // 20 bytes
 ```
 
 On the **PC** (when the viewer is running):
 
 ```
 pc_runs/RUN_<timestamp>/
-└── stream.bin          # 16 B per packet, all channels interleaved
+└── stream.bin          # 20 B per packet, all channels interleaved
 ```
 
 ## Quick Start
@@ -207,7 +220,7 @@ Tasks are pinned to specific cores for optimal performance:
 
 ### Buffered Writing
 
-4KB buffers with periodic flushing (every 100ms) ensure efficient SD card writes.
+16KB buffers with periodic flushing (every 1s) keep SD card latency isolated to the writer task.
 
 ### BNO085 Integration
 
@@ -220,6 +233,7 @@ The BNO085 IMU is integrated via the `esp32_BNO08x` C++ library, providing three
 ```c
 bool xxx_init(SensorContext_t *ctx);
 bool xxx_read_sample(SensorContext_t *ctx, float *data_out);
+bool xxx_process_sample(SensorContext_t *ctx, const float *raw_in, float *processed_out, uint8_t *flags_out);
 ```
 
 ### Data Types (`components/data_types/`)
@@ -237,9 +251,9 @@ bool metadata_finalize(const char *filepath);
 ```c
 bool sd_storage_init(void);
 bool sd_create_run_session(void);
-bool sd_write_fast_data(const fast_data_record_t *record);
-bool sd_write_medium_data(const medium_data_record_t *record);
-bool sd_write_slow_data(const slow_data_record_t *record);
+bool sd_write_fast_data(const sensor_data_record_v2_t *record);
+bool sd_write_medium_data(const sensor_data_record_v2_t *record);
+bool sd_write_slow_data(const sensor_data_record_v2_t *record);
 bool sd_close_run_session(void);
 void sd_storage_deinit(void);
 ```
@@ -250,9 +264,9 @@ void sd_storage_deinit(void);
 |--------|-------|
 | Max Sample Rate | 1kHz |
 | Sensor Channels | 9 (3 IMU + 6 others) |
-| Total Data Rate | ~45 KB/s |
+| Total Data Rate | raw+processed binary records; depends on effective sensor rates |
 | Queue Latency | < 100ms |
-| SD Flush Interval | 100ms or buffer full |
+| SD Flush Interval | 1s or buffer full |
 
 ## Configuration
 
@@ -269,9 +283,9 @@ vTaskDelay(pdMS_TO_TICKS(30000));  // Current: 30 seconds
 Adjust in `components/data_types/include/data_types.h`:
 
 ```c
-#define FAST_QUEUE_SIZE     200
-#define MEDIUM_QUEUE_SIZE   20
-#define SLOW_QUEUE_SIZE     10
+#define FAST_QUEUE_SIZE     600
+#define MEDIUM_QUEUE_SIZE   80
+#define SLOW_QUEUE_SIZE     20
 ```
 
 ### Buffer Size
@@ -279,7 +293,7 @@ Adjust in `components/data_types/include/data_types.h`:
 Change in `components/sd_storage/include/sd_storage.h`:
 
 ```c
-#define WRITE_BUFFER_SIZE   4096  // 4KB
+#define WRITE_BUFFER_SIZE   (16 * 1024)  // 16KB
 ```
 
 ## Development Status

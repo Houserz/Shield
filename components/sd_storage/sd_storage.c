@@ -94,9 +94,9 @@ static bool write_to_buffer(file_buffer_t *buffer, const void *data, size_t size
     buffer->buffer_pos += size;
     storage.total_bytes_written += size;
     
-    // Periodic flush (every 100ms)
+    // Periodic flush. Keep this coarse so SD latency stays isolated to writer task.
     uint32_t current_time = get_timestamp_ms();
-    if (current_time - buffer->last_flush_time > 100) {
+    if (current_time - buffer->last_flush_time > WRITE_FLUSH_INTERVAL_MS) {
         return flush_buffer(buffer);
     }
     
@@ -325,22 +325,22 @@ bool sd_close_run_session(void) {
 /**
  * @brief Write fast data record
  */
-bool sd_write_fast_data(const fast_data_record_t *record) {
-    return write_to_buffer(&storage.fast_buffer, record, sizeof(fast_data_record_t));
+bool sd_write_fast_data(const sensor_data_record_v2_t *record) {
+    return write_to_buffer(&storage.fast_buffer, record, sizeof(sensor_data_record_v2_t));
 }
 
 /**
  * @brief Write medium data record
  */
-bool sd_write_medium_data(const medium_data_record_t *record) {
-    return write_to_buffer(&storage.medium_buffer, record, sizeof(medium_data_record_t));
+bool sd_write_medium_data(const sensor_data_record_v2_t *record) {
+    return write_to_buffer(&storage.medium_buffer, record, sizeof(sensor_data_record_v2_t));
 }
 
 /**
  * @brief Write slow data record
  */
-bool sd_write_slow_data(const slow_data_record_t *record) {
-    return write_to_buffer(&storage.slow_buffer, record, sizeof(slow_data_record_t));
+bool sd_write_slow_data(const sensor_data_record_v2_t *record) {
+    return write_to_buffer(&storage.slow_buffer, record, sizeof(sensor_data_record_v2_t));
 }
 
 /**

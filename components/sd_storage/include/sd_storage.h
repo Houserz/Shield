@@ -26,7 +26,8 @@
 #define SD_MOUNT_POINT  "/sdcard"
 
 // Write buffer size
-#define WRITE_BUFFER_SIZE   4096    // 4KB
+#define WRITE_BUFFER_SIZE   (16 * 1024)    // 16KB
+#define WRITE_FLUSH_INTERVAL_MS 1000
 
 // Path length limits
 #define MAX_FILENAME_LEN    64
@@ -112,7 +113,7 @@ bool sd_close_run_session(void);
  * @param record Data record pointer
  * @return true=success, false=failure
  */
-bool sd_write_fast_data(const fast_data_record_t *record);
+bool sd_write_fast_data(const sensor_data_record_v2_t *record);
 
 /**
  * @brief Write medium data record
@@ -120,7 +121,7 @@ bool sd_write_fast_data(const fast_data_record_t *record);
  * @param record Data record pointer
  * @return true=success, false=failure
  */
-bool sd_write_medium_data(const medium_data_record_t *record);
+bool sd_write_medium_data(const sensor_data_record_v2_t *record);
 
 /**
  * @brief Write slow data record
@@ -128,7 +129,7 @@ bool sd_write_medium_data(const medium_data_record_t *record);
  * @param record Data record pointer
  * @return true=success, false=failure
  */
-bool sd_write_slow_data(const slow_data_record_t *record);
+bool sd_write_slow_data(const sensor_data_record_v2_t *record);
 
 /**
  * @brief Write event log

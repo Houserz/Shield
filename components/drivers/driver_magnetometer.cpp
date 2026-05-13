@@ -6,6 +6,8 @@
 static const char *TAG = "bno085_mag";
 static BNO08x *imu = nullptr;
 
+static constexpr uint32_t kMagReportIntervalUs = 10000UL; // BNO085 effective limit is ~100 Hz
+
 #if ENABLE_SPIKE_FILTER
 // Effective mag rate from BNO085 is ~100 Hz; 5 s calibration => 500 samples.
 static constexpr uint16_t kMagCalibCap = 512;
@@ -37,7 +39,7 @@ extern "C" bool mag_init(SensorContext_t *ctx) {
     if (ctx == NULL || ctx->hw_config == NULL) return false;
 
     imu = (BNO08x *)ctx->hw_config;
-    imu->rpt.uncal_magnetometer.enable(1000UL);
+    imu->rpt.uncal_magnetometer.enable(kMagReportIntervalUs);
 
     ESP_LOGI(TAG, "Uncalibrated Magnetometer enabled");
 
@@ -61,10 +63,32 @@ extern "C" bool mag_read_sample(SensorContext_t *ctx, float *data_out) {
     data_out[1] = d.y;
     data_out[2] = d.z;
 
+    return true;
+}
+
+extern "C" bool mag_process_sample(SensorContext_t *ctx, const float *raw_in, float *processed_out, uint8_t *flags_out) {
+    (void)ctx;
+    if (raw_in == NULL || processed_out == NULL || flags_out == NULL) return false;
+
+    processed_out[0] = raw_in[0];
+    processed_out[1] = raw_in[1];
+    processed_out[2] = raw_in[2];
+    *flags_out = DATA_FLAG_PROCESSED_SAME_AS_RAW;
+
 #if ENABLE_SPIKE_FILTER
-    data_out[0] = s_filt_mx.update(data_out[0]);
-    data_out[1] = s_filt_my.update(data_out[1]);
-    data_out[2] = s_filt_mz.update(data_out[2]);
+    bool sx = false;
+    bool sy = false;
+    bool sz = false;
+    processed_out[0] = s_filt_mx.update(raw_in[0], &sx);
+    processed_out[1] = s_filt_my.update(raw_in[1], &sy);
+    processed_out[2] = s_filt_mz.update(raw_in[2], &sz);
+    *flags_out = DATA_FLAG_FILTER_ACTIVE;
+    if (sx || sy || sz) {
+        *flags_out |= DATA_FLAG_FILTER_SPIKE;
+    }
+    if (processed_out[0] == raw_in[0] && processed_out[1] == raw_in[1] && processed_out[2] == raw_in[2]) {
+        *flags_out |= DATA_FLAG_PROCESSED_SAME_AS_RAW;
+    }
     s_filt_mx.debug_log_periodic("mag-x");
 #endif
 

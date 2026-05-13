@@ -7,9 +7,10 @@ Layout
 A QTabWidget with one tab per sensor group. Each tab contains 1..3 panels.
 Every panel shows:
     - raw samples (semi-transparent, axis-colored)
-    - rolling mean over the visible window (black, thin)
-    - +/- 1 sigma band around the mean (semi-transparent fill)
-    - title: "<channel>   Bias=...   Std=...   RMS=..."
+    - processed samples (solid, axis-colored)
+    - processed rolling mean over the visible window (black, thin)
+    - +/- 1 sigma band around the processed mean (semi-transparent fill)
+    - title: "<channel>   Hz=...   Bias=...   Std=...   RMS=..."
 
 Two view modes:
     - "live"  : last LIVE_WINDOW_SEC seconds at full rate
@@ -21,11 +22,14 @@ Transports
     Primary : USB Serial (ESP32-S3 USB Serial/JTAG, virtual COM port)
     Backup  : TCP socket to ESP32 SoftAP (default 192.168.4.1:3333)
 
-Frame format (16 bytes LE)
+Frame format (20 bytes LE)
 --------------------------
     H  uint16 magic = 0xAA55      (bytes on the wire: 0x55 0xAA)
     B  uint8  sensor_id           (1..9)
     B  uint8  axis                (0=scalar, 1=x, 2=y, 3=z)
+    B  uint8  kind                (0=raw, 1=processed)
+    B  uint8  flags               DATA_FLAG_* bits
+    H  uint16 reserved
     I  uint32 seq                 (monotonic)
     I  uint32 timestamp_ms        (ESP32 uptime, ms)
     f  float32 value
@@ -65,9 +69,11 @@ except ImportError:
 # Protocol
 # ====================================================================
 FRAME_MAGIC = 0xAA55
-FRAME_FMT = "<HBBIIf"
+DATA_KIND_RAW = 0
+DATA_KIND_PROCESSED = 1
+FRAME_FMT = "<HBBBBHIIf"
 FRAME_SIZE = struct.calcsize(FRAME_FMT)
-assert FRAME_SIZE == 16
+assert FRAME_SIZE == 20
 
 # (sensor_id, name, axis_names, unit, group_name, axis_color_rgb)
 SENSORS = {
@@ -189,6 +195,17 @@ class ChannelBuf:
             std  = math.sqrt(max(0.0, var))
             rms  = math.sqrt(mean * mean + var)
             return (mean, std, rms)
+
+    def rate_recent_hz(self) -> float:
+        """Estimate channel rate from the visible live window."""
+        with self.lock:
+            n = len(self.live_t)
+            if n < 2:
+                return 0.0
+            dt = self.live_t[-1] - self.live_t[0]
+            if dt <= 0.0:
+                return 0.0
+            return (n - 1) / dt
 
 
 # ====================================================================
@@ -324,11 +341,12 @@ class Reader(threading.Thread):
                 i += 1
                 continue
             try:
-                magic, sid, axis, seq, ts_ms, val = struct.unpack_from(FRAME_FMT, buf, i)
+                magic, sid, axis, kind, flags, _reserved, seq, ts_ms, val = struct.unpack_from(FRAME_FMT, buf, i)
             except struct.error:
                 i += 1
                 continue
-            if magic != FRAME_MAGIC or sid not in SENSORS or axis > 3:
+            if (magic != FRAME_MAGIC or sid not in SENSORS or axis > 3 or
+                    kind not in (DATA_KIND_RAW, DATA_KIND_PROCESSED)):
                 i += 1
                 continue
 
@@ -345,7 +363,7 @@ class Reader(threading.Thread):
                 self.t0_ms = ts_ms
             t_sec = (ts_ms - self.t0_ms) / 1000.0
 
-            ch = self.channels.get((sid, axis))
+            ch = self.channels.get((sid, axis, kind))
             if ch is not None:
                 ch.push(t_sec, val)
 
@@ -384,21 +402,21 @@ class Reader(threading.Thread):
 # Plot panel
 # ====================================================================
 class SensorPanel:
-    """One channel = raw + rolling mean + +/- 1 sigma band + stats title."""
+    """One channel = raw overlay + processed trace + processed stats."""
 
     def __init__(self, plot: pg.PlotItem, label: str, unit: str, color_rgb):
         self.plot = plot
         self.label = label
         self.unit = unit
         col = QtGui.QColor(*color_rgb)
-        col_band = QtGui.QColor(*color_rgb, 70)
-        col_raw  = QtGui.QColor(*color_rgb, 130)
+        col_band = QtGui.QColor(*color_rgb, 28)
+        col_raw  = QtGui.QColor(80, 80, 80, 80)
 
         plot.showGrid(x=True, y=True, alpha=0.2)
         plot.setLabel("left", f"{label} ({unit})")
         plot.setLabel("bottom", "time (s)")
-        plot.enableAutoRange(axis="y", enable=True)
-        plot.setAutoVisible(y=True)
+        plot.enableAutoRange(axis="y", enable=False)
+        plot.setAutoVisible(y=False)
 
         self.band_lo = plot.plot(pen=pg.mkPen(col_band, width=0))
         self.band_hi = plot.plot(pen=pg.mkPen(col_band, width=0))
@@ -406,34 +424,105 @@ class SensorPanel:
                                             brush=pg.mkBrush(col_band))
         plot.addItem(self.band_fill)
 
-        self.raw_curve  = plot.plot(pen=pg.mkPen(col_raw, width=1))
+        self.raw_curve  = plot.plot(pen=pg.mkPen(col_raw, width=0.8, style=QtCore.Qt.PenStyle.DotLine))
+        self.proc_curve = plot.plot(pen=pg.mkPen(col, width=1.8))
         self.mean_curve = plot.plot(pen=pg.mkPen(QtGui.QColor(0, 0, 0), width=1.5))
 
+    @staticmethod
+    def _visible_values(t: np.ndarray, v: np.ndarray, x_lo: float, x_hi: float) -> np.ndarray:
+        if t.size == 0 or v.size == 0:
+            return np.empty(0)
+        n = min(t.size, v.size)
+        tt = t[:n]
+        vv = v[:n]
+        mask = np.isfinite(tt) & np.isfinite(vv) & (tt >= x_lo) & (tt <= x_hi)
+        return vv[mask]
+
+    def _set_robust_y_range(self, series: list[tuple[np.ndarray, np.ndarray]], x_lo: float, x_hi: float):
+        chunks = [self._visible_values(t, v, x_lo, x_hi) for t, v in series]
+        chunks = [c for c in chunks if c.size]
+        if not chunks:
+            return
+
+        values = np.concatenate(chunks)
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            return
+
+        if values.size >= 40:
+            y_lo, y_hi = np.nanpercentile(values, [0.5, 99.5])
+        else:
+            y_lo = float(np.nanmin(values))
+            y_hi = float(np.nanmax(values))
+
+        if not np.isfinite(y_lo) or not np.isfinite(y_hi):
+            return
+        if y_hi <= y_lo:
+            center = float(y_hi)
+            pad = max(abs(center) * 0.02, 1e-3)
+            y_lo = center - pad
+            y_hi = center + pad
+        else:
+            span = y_hi - y_lo
+            pad = max(span * 0.15, 1e-4)
+            y_lo -= pad
+            y_hi += pad
+
+        self.plot.setYRange(float(y_lo), float(y_hi), padding=0.0)
+
     def update(self,
-               live_t: np.ndarray, live_v: np.ndarray,
-               hist_t: np.ndarray, hist_mean: np.ndarray,
-               hist_min: np.ndarray, hist_max: np.ndarray, hist_std: np.ndarray,
+               raw_live_t: np.ndarray, raw_live_v: np.ndarray,
+               raw_hist_t: np.ndarray, raw_hist_mean: np.ndarray,
+               proc_live_t: np.ndarray, proc_live_v: np.ndarray,
+               proc_hist_t: np.ndarray, proc_hist_mean: np.ndarray,
+               proc_hist_min: np.ndarray, proc_hist_max: np.ndarray, proc_hist_std: np.ndarray,
                x_lo: float, x_hi: float, view_mode: str,
-               stats: tuple[float, float, float]):
+               stats: tuple[float, float, float], rate_hz: float,
+               show_raw: bool, show_processed: bool, show_band: bool):
 
         if view_mode == "live":
-            # raw (full-rate live), mean (history), band = mean +/- std
-            self.raw_curve.setData(live_t, live_v)
-            self.mean_curve.setData(hist_t, hist_mean)
-            self.band_lo.setData(hist_t, hist_mean - hist_std)
-            self.band_hi.setData(hist_t, hist_mean + hist_std)
+            self.raw_curve.setData(raw_live_t, raw_live_v) if show_raw else self.raw_curve.setData([], [])
+            self.proc_curve.setData(proc_live_t, proc_live_v) if show_processed else self.proc_curve.setData([], [])
+            self.mean_curve.setData(proc_hist_t, proc_hist_mean)
+            y_series = []
+            if show_raw:
+                y_series.append((raw_live_t, raw_live_v))
+            if show_processed:
+                y_series.append((proc_live_t, proc_live_v))
+            y_series.append((proc_hist_t, proc_hist_mean))
+            if show_band:
+                band_lo = proc_hist_mean - proc_hist_std
+                band_hi = proc_hist_mean + proc_hist_std
+                self.band_lo.setData(proc_hist_t, band_lo)
+                self.band_hi.setData(proc_hist_t, band_hi)
+                y_series.extend([(proc_hist_t, band_lo), (proc_hist_t, band_hi)])
+            else:
+                self.band_lo.setData([], [])
+                self.band_hi.setData([], [])
         else:
-            # full history: raw drawn as min/max envelope
-            self.raw_curve.setData(np.empty(0), np.empty(0))
-            self.mean_curve.setData(hist_t, hist_mean)
-            self.band_lo.setData(hist_t, hist_min)
-            self.band_hi.setData(hist_t, hist_max)
+            self.raw_curve.setData(raw_hist_t, raw_hist_mean) if show_raw else self.raw_curve.setData([], [])
+            self.proc_curve.setData(proc_hist_t, proc_hist_mean) if show_processed else self.proc_curve.setData([], [])
+            self.mean_curve.setData(proc_hist_t, proc_hist_mean)
+            y_series = []
+            if show_raw:
+                y_series.append((raw_hist_t, raw_hist_mean))
+            if show_processed:
+                y_series.append((proc_hist_t, proc_hist_mean))
+            y_series.append((proc_hist_t, proc_hist_mean))
+            if show_band:
+                self.band_lo.setData(proc_hist_t, proc_hist_min)
+                self.band_hi.setData(proc_hist_t, proc_hist_max)
+                y_series.extend([(proc_hist_t, proc_hist_min), (proc_hist_t, proc_hist_max)])
+            else:
+                self.band_lo.setData([], [])
+                self.band_hi.setData([], [])
 
         self.plot.setXRange(x_lo, x_hi, padding=0.0)
+        self._set_robust_y_range(y_series, x_lo, x_hi)
 
         bias, std, rms = stats
         self.plot.setTitle(
-            f"{self.label}   Bias={bias:+.4g}   Std={std:.4g}   RMS={rms:.4g}"
+            f"{self.label}   Hz={rate_hz:5.1f}   Bias={bias:+.4g}   Std={std:.4g}   RMS={rms:.4g}"
         )
 
 
@@ -498,6 +587,15 @@ class Viewer(QtWidgets.QMainWindow):
         self.btn_live.clicked.connect(lambda: self._set_view("live"))
         controls.addWidget(self.btn_full)
         controls.addWidget(self.btn_live)
+        self.chk_raw = QtWidgets.QCheckBox("raw")
+        self.chk_processed = QtWidgets.QCheckBox("processed")
+        self.chk_band = QtWidgets.QCheckBox("stats band")
+        self.chk_raw.setChecked(True)
+        self.chk_processed.setChecked(True)
+        self.chk_band.setChecked(False)
+        controls.addWidget(self.chk_raw)
+        controls.addWidget(self.chk_processed)
+        controls.addWidget(self.chk_band)
         controls.addStretch(1)
 
         self._view_mode = "live"
@@ -547,7 +645,7 @@ class Viewer(QtWidgets.QMainWindow):
 
     def refresh(self):
         # Snapshot every channel under its lock, then compute once.
-        snapshots: dict[tuple[int, int], dict] = {}
+        snapshots: dict[tuple[int, int, int], dict] = {}
         latest_t = 0.0
         for key, ch in self.channels.items():
             with ch.lock:
@@ -570,15 +668,27 @@ class Viewer(QtWidgets.QMainWindow):
             x_lo = 0.0
             x_hi = latest_t if latest_t > 0 else 1.0
 
+        empty = dict(
+            lt=np.empty(0), lv=np.empty(0), ht=np.empty(0),
+            hmean=np.empty(0), hmin=np.empty(0), hmax=np.empty(0), hstd=np.empty(0),
+        )
+
         for key, panel in self.panels.items():
-            ch = self.channels.get(key)
-            if ch is None: continue
-            s = snapshots.get(key)
-            if s is None: continue
-            stats = ch.stats_alltime()
-            panel.update(s["lt"], s["lv"],
-                         s["ht"], s["hmean"], s["hmin"], s["hmax"], s["hstd"],
-                         x_lo, x_hi, self._view_mode, stats)
+            sid, axis = key
+            raw_key = (sid, axis, DATA_KIND_RAW)
+            proc_key = (sid, axis, DATA_KIND_PROCESSED)
+            raw_s = snapshots.get(raw_key, empty)
+            proc_s = snapshots.get(proc_key, empty)
+            proc_ch = self.channels.get(proc_key)
+            stats = proc_ch.stats_alltime() if proc_ch is not None else (0.0, 0.0, 0.0)
+            rate_hz = proc_ch.rate_recent_hz() if proc_ch is not None else 0.0
+            panel.update(raw_s["lt"], raw_s["lv"], raw_s["ht"], raw_s["hmean"],
+                         proc_s["lt"], proc_s["lv"], proc_s["ht"], proc_s["hmean"],
+                         proc_s["hmin"], proc_s["hmax"], proc_s["hstd"],
+                         x_lo, x_hi, self._view_mode, stats, rate_hz,
+                         self.chk_raw.isChecked(),
+                         self.chk_processed.isChecked(),
+                         self.chk_band.isChecked())
 
         # status line
         elapsed = time.time() - self.reader.t0_wall
@@ -610,13 +720,15 @@ def main():
     dump_path = run_dir / "stream.bin"
 
     # Build channel buffer table mirroring SENSORS spec.
-    channels: dict[tuple[int, int], ChannelBuf] = {}
+    channels: dict[tuple[int, int, int], ChannelBuf] = {}
     for sid, (name, axes, unit, _, _) in SENSORS.items():
         if len(axes) == 1:
-            channels[(sid, 0)] = ChannelBuf(name=name, unit=unit)
+            channels[(sid, 0, DATA_KIND_RAW)] = ChannelBuf(name=f"{name}.raw", unit=unit)
+            channels[(sid, 0, DATA_KIND_PROCESSED)] = ChannelBuf(name=f"{name}.processed", unit=unit)
         else:
             for ax_i, ax_name in enumerate(axes, start=1):
-                channels[(sid, ax_i)] = ChannelBuf(name=f"{name}.{ax_name}", unit=unit)
+                channels[(sid, ax_i, DATA_KIND_RAW)] = ChannelBuf(name=f"{name}.{ax_name}.raw", unit=unit)
+                channels[(sid, ax_i, DATA_KIND_PROCESSED)] = ChannelBuf(name=f"{name}.{ax_name}.processed", unit=unit)
 
     reader = Reader(args, channels, dump_path)
     reader.start()

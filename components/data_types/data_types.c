@@ -16,6 +16,35 @@
 
 static uint32_t system_start_time_ms = 0;
 
+typedef struct {
+    uint8_t id;
+    const char *name;
+    const char *type;
+    const char *tier;
+    uint16_t poll_rate_hz;
+    uint16_t expected_rate_hz;
+    uint8_t axis_count;
+    const char *unit;
+    const char *processing;
+} sensor_meta_t;
+
+static const sensor_meta_t SENSOR_META[] = {
+    {1, "SW420_Vibration", "VIBRATION", "fast", 1000, 1000, 1, "binary", "identity"},
+    {2, "ACS723_Current", "CURRENT", "medium", 200, 200, 1, "A", "identity"},
+    {3, "MPL3115_Pressure", "PRESSURE", "slow", 50, 50, 1, "Pa", "identity"},
+    {4, "MCP9808_Temp", "TEMPERATURE", "slow", 50, 50, 1, "C", "identity"},
+    {5, "INMP441_Microphone", "MICROPHONE", "fast", 1000, 1000, 1, "rms", "identity"},
+    {6, "751-1015-ND_Photodiode", "PHOTODIODE", "medium", 200, 200, 1, "V", "identity"},
+    {7, "BNO085_Magnetometer", "MAGNETOMETER", "fast", 1000, 100, 3, "uT", "spike_filter"},
+    {8, "BNO085_Gyroscope", "GYROSCOPE", "fast", 1000, 100, 3, "rad/s", "spike_filter"},
+    {9, "BNO085_Accelerometer", "ACCELEROMETER", "fast", 1000, 250, 3, "m/s^2", "spike_filter"},
+};
+
+static char s_meta_run_id[16] = {0};
+static unsigned int s_meta_start_time = 0;
+static unsigned int s_meta_end_time = 0;
+static daq_statistics_t s_last_stats = {0};
+
 // ==================== Data Types Helper Functions ====================
 
 /**
@@ -37,158 +66,146 @@ uint32_t get_timestamp_ms(void) {
 
 // ==================== Metadata Management Functions ====================
 
-/**
- * @brief Create metadata file
- */
-bool metadata_create(const char *filepath, const char *run_id) {
-    FILE *file = fopen(filepath, "w");
+static void metadata_write_sensor_list(FILE *file, const daq_statistics_t *stats) {
+    float duration_s = 0.0f;
+    if (stats && stats->duration_ms > 0) {
+        duration_s = (float)stats->duration_ms / 1000.0f;
+    }
+
+    fprintf(file, "  \"sensors\": [\n");
+    for (size_t i = 0; i < sizeof(SENSOR_META) / sizeof(SENSOR_META[0]); i++) {
+        const sensor_meta_t *s = &SENSOR_META[i];
+        uint32_t samples = stats ? stats->sensor_samples[s->id] : 0;
+        float observed_hz = (duration_s > 0.0f) ? ((float)samples / duration_s) : 0.0f;
+        fprintf(file,
+                "    {\"id\": %u, \"name\": \"%s\", \"type\": \"%s\", \"tier\": \"%s\", "
+                "\"poll_rate_hz\": %u, \"expected_rate_hz\": %u, "
+                "\"observed_rate_hz\": %.3f, \"axis_count\": %u, "
+                "\"unit\": \"%s\", \"processing\": \"%s\"}%s\n",
+                (unsigned)s->id, s->name, s->type, s->tier,
+                (unsigned)s->poll_rate_hz, (unsigned)s->expected_rate_hz,
+                observed_hz, (unsigned)s->axis_count, s->unit, s->processing,
+                (i + 1 == sizeof(SENSOR_META) / sizeof(SENSOR_META[0])) ? "" : ",");
+    }
+    fprintf(file, "  ],\n");
+}
+
+static bool metadata_write_full(const char *filepath, const char *run_id,
+                                unsigned int start_time, unsigned int end_time,
+                                const daq_statistics_t *stats) {
+    char temp_path[384];
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", filepath);
+
+    FILE *file = fopen(temp_path, "w");
     if (!file) {
         return false;
     }
-    
-    // Get system information
+
+    daq_statistics_t zero_stats = {0};
+    if (!stats) {
+        stats = &zero_stats;
+    }
+
     esp_chip_info_t chip_info;
     esp_chip_info(&chip_info);
-    
-    // Write JSON-formatted metadata
+
     fprintf(file, "{\n");
-    fprintf(file, "  \"run_id\": \"%s\",\n", run_id);
-    fprintf(file, "  \"start_time\": \"%u\",\n", (unsigned int)time(NULL));
-    fprintf(file, "  \"end_time\": null,\n");
+    fprintf(file, "  \"run_id\": \"%s\",\n", run_id && run_id[0] ? run_id : "UNKNOWN");
+    fprintf(file, "  \"start_time\": \"%u\",\n", start_time);
+    if (end_time > 0) {
+        fprintf(file, "  \"end_time\": \"%u\",\n", end_time);
+    } else {
+        fprintf(file, "  \"end_time\": null,\n");
+    }
     fprintf(file, "  \"device_info\": {\n");
     fprintf(file, "    \"chip\": \"ESP32-S3\",\n");
     fprintf(file, "    \"cores\": %d,\n", chip_info.cores);
     fprintf(file, "    \"revision\": %d,\n", chip_info.revision);
-    fprintf(file, "    \"firmware_version\": \"1.0.0\",\n");
+    fprintf(file, "    \"firmware_version\": \"2.0.0\",\n");
     fprintf(file, "    \"idf_version\": \"%s\"\n", IDF_VER);
     fprintf(file, "  },\n");
-    fprintf(file, "  \"sensors\": {\n");
-    fprintf(file, "    \"fast\": [\n");
-    fprintf(file, "      {\"id\": 1, \"name\": \"SW420_Vibration\", \"type\": \"VIBRATION\", \"rate\": 1000, \"unit\": \"binary\"},\n");
-    fprintf(file, "      {\"id\": 5, \"name\": \"INMP441_Microphone\", \"type\": \"MICROPHONE\", \"rate\": 1000, \"unit\": \"dBFS\"},\n");
-    fprintf(file, "      {\"id\": 7, \"name\": \"BNO085_Magnetometer\", \"type\": \"MAGNETOMETER\", \"rate\": 1000, \"unit\": \"uT\"},\n");
-    fprintf(file, "      {\"id\": 8, \"name\": \"BNO085_Gyroscope\", \"type\": \"GYROSCOPE\", \"rate\": 1000, \"unit\": \"rad/s\"},\n");
-    fprintf(file, "      {\"id\": 9, \"name\": \"BNO085_Accelerometer\", \"type\": \"ACCELEROMETER\", \"rate\": 1000, \"unit\": \"m/s^2\"}\n");
-    fprintf(file, "    ],\n");
-    fprintf(file, "    \"medium\": [\n");
-    fprintf(file, "      {\"id\": 2, \"name\": \"ACS723_Current\", \"type\": \"CURRENT\", \"rate\": 200, \"unit\": \"A\"},\n");
-    fprintf(file, "      {\"id\": 6, \"name\": \"751-1015-ND_Photodiode\", \"type\": \"PHOTODIODE\", \"rate\": 200, \"unit\": \"V\"}\n");
-    fprintf(file, "    ],\n");
-    fprintf(file, "    \"slow\": [\n");
-    fprintf(file, "      {\"id\": 3, \"name\": \"MPL3115_Pressure\", \"type\": \"PRESSURE\", \"rate\": 50, \"unit\": \"kPa\"},\n");
-    fprintf(file, "      {\"id\": 4, \"name\": \"MCP9808_Temp\", \"type\": \"TEMPERATURE\", \"rate\": 50, \"unit\": \"C\"}\n");
-    fprintf(file, "    ]\n");
+    fprintf(file, "  \"record_format\": {\n");
+    fprintf(file, "    \"version\": 2,\n");
+    fprintf(file, "    \"record_size_bytes\": %u,\n", (unsigned)sizeof(sensor_data_record_v2_t));
+    fprintf(file, "    \"raw_definition\": \"physical_units_before_processing\",\n");
+    fprintf(file, "    \"kind\": {\"0\": \"raw\", \"1\": \"processed\"},\n");
+    fprintf(file, "    \"flags\": {\"0x01\": \"processed_same_as_raw\", \"0x02\": \"filter_active\", \"0x04\": \"filter_spike\"}\n");
     fprintf(file, "  },\n");
     fprintf(file, "  \"data_files\": {\n");
     fprintf(file, "    \"fast\": \"fast_data.bin\",\n");
     fprintf(file, "    \"medium\": \"medium_data.bin\",\n");
     fprintf(file, "    \"slow\": \"slow_data.bin\"\n");
     fprintf(file, "  },\n");
+    metadata_write_sensor_list(file, stats);
     fprintf(file, "  \"statistics\": {\n");
-    fprintf(file, "    \"total_samples\": {\n");
-    fprintf(file, "      \"fast\": 0,\n");
-    fprintf(file, "      \"medium\": 0,\n");
-    fprintf(file, "      \"slow\": 0\n");
-    fprintf(file, "    },\n");
-    fprintf(file, "    \"duration_ms\": 0,\n");
-    fprintf(file, "    \"queue_overruns\": 0,\n");
-    fprintf(file, "    \"sd_write_errors\": 0\n");
+    fprintf(file, "    \"tier_samples\": {\"fast\": %"PRIu32", \"medium\": %"PRIu32", \"slow\": %"PRIu32"},\n",
+            stats->fast_samples, stats->medium_samples, stats->slow_samples);
+    fprintf(file, "    \"tier_records\": {\"fast\": %"PRIu32", \"medium\": %"PRIu32", \"slow\": %"PRIu32"},\n",
+            stats->fast_records, stats->medium_records, stats->slow_records);
+    fprintf(file, "    \"kind_records\": {\"raw\": %"PRIu32", \"processed\": %"PRIu32"},\n",
+            stats->raw_records, stats->processed_records);
+    fprintf(file, "    \"sensor_samples\": {");
+    for (uint8_t id = 1; id <= MAX_SENSOR_ID; id++) {
+        fprintf(file, "\"%u\": %"PRIu32"%s", (unsigned)id, stats->sensor_samples[id],
+                (id == MAX_SENSOR_ID) ? "" : ", ");
+    }
+    fprintf(file, "},\n");
+    fprintf(file, "    \"sensor_records\": {");
+    for (uint8_t id = 1; id <= MAX_SENSOR_ID; id++) {
+        fprintf(file, "\"%u\": %"PRIu32"%s", (unsigned)id, stats->sensor_records[id],
+                (id == MAX_SENSOR_ID) ? "" : ", ");
+    }
+    fprintf(file, "},\n");
+    fprintf(file, "    \"duration_ms\": %"PRIu32",\n", stats->duration_ms);
+    fprintf(file, "    \"queue_overruns\": %"PRIu32",\n", stats->queue_overruns);
+    fprintf(file, "    \"sd_write_errors\": %"PRIu32"\n", stats->sd_errors);
     fprintf(file, "  }\n");
     fprintf(file, "}\n");
-    
+
     fclose(file);
+
+    remove(filepath);
+    if (rename(temp_path, filepath) != 0) {
+        remove(temp_path);
+        return false;
+    }
+
     return true;
+}
+
+/**
+ * @brief Create metadata file
+ */
+bool metadata_create(const char *filepath, const char *run_id) {
+    memset(&s_last_stats, 0, sizeof(s_last_stats));
+    s_meta_start_time = (unsigned int)time(NULL);
+    s_meta_end_time = 0;
+    snprintf(s_meta_run_id, sizeof(s_meta_run_id), "%s", run_id ? run_id : "UNKNOWN");
+
+    return metadata_write_full(filepath, s_meta_run_id, s_meta_start_time,
+                               s_meta_end_time, &s_last_stats);
 }
 
 /**
  * @brief Update metadata statistics
  */
 bool metadata_update_statistics(const char *filepath, const daq_statistics_t *stats) {
-    char temp_path[256];
-    snprintf(temp_path, sizeof(temp_path), "%s.tmp", filepath);
-    
-    FILE *file_in = fopen(filepath, "r");
-    FILE *file_out = fopen(temp_path, "w");
-    
-    if (!file_in || !file_out) {
-        if (file_in) fclose(file_in);
-        if (file_out) fclose(file_out);
-        return false;
+    if (stats) {
+        s_last_stats = *stats;
     }
-    
-    char line[256];
-    bool in_stats = false;
-    
-    while (fgets(line, sizeof(line), file_in)) {
-        if (strstr(line, "\"statistics\"")) {
-            in_stats = true;
-        }
-        
-        if (in_stats) {
-            if (strstr(line, "\"fast\":")) {
-                fprintf(file_out, "      \"fast\": %"PRIu32",\n", stats->fast_samples);
-                continue;
-            } else if (strstr(line, "\"medium\":")) {
-                fprintf(file_out, "      \"medium\": %"PRIu32",\n", stats->medium_samples);
-                continue;
-            } else if (strstr(line, "\"slow\":")) {
-                fprintf(file_out, "      \"slow\": %"PRIu32"\n", stats->slow_samples);
-                continue;
-            } else if (strstr(line, "\"duration_ms\":")) {
-                fprintf(file_out, "    \"duration_ms\": %"PRIu32",\n", stats->duration_ms);
-                continue;
-            } else if (strstr(line, "\"queue_overruns\":")) {
-                fprintf(file_out, "    \"queue_overruns\": %"PRIu32",\n", stats->queue_overruns);
-                continue;
-            } else if (strstr(line, "\"sd_write_errors\":")) {
-                fprintf(file_out, "    \"sd_write_errors\": %"PRIu32"\n", stats->sd_errors);
-                in_stats = false;
-                continue;
-            }
-        }
-        
-        fputs(line, file_out);
-    }
-    
-    fclose(file_in);
-    fclose(file_out);
-    
-    remove(filepath);
-    rename(temp_path, filepath);
-    
-    return true;
+
+    return metadata_write_full(filepath, s_meta_run_id, s_meta_start_time,
+                               s_meta_end_time, &s_last_stats);
 }
 
 /**
  * @brief Mark run as finished
  */
 bool metadata_finalize(const char *filepath) {
-    char temp_path[256];
-    snprintf(temp_path, sizeof(temp_path), "%s.tmp", filepath);
-    
-    FILE *file_in = fopen(filepath, "r");
-    FILE *file_out = fopen(temp_path, "w");
-    
-    if (!file_in || !file_out) {
-        if (file_in) fclose(file_in);
-        if (file_out) fclose(file_out);
-        return false;
+    if (s_meta_end_time == 0) {
+        s_meta_end_time = (unsigned int)time(NULL);
     }
-    
-    char line[256];
-    while (fgets(line, sizeof(line), file_in)) {
-        if (strstr(line, "\"end_time\": null")) {
-            fprintf(file_out, "  \"end_time\": \"%u\",\n", (unsigned int)time(NULL));
-        } else {
-            fputs(line, file_out);
-        }
-    }
-    
-    fclose(file_in);
-    fclose(file_out);
-    
-    remove(filepath);
-    rename(temp_path, filepath);
-    
-    return true;
+
+    return metadata_write_full(filepath, s_meta_run_id, s_meta_start_time,
+                               s_meta_end_time, &s_last_stats);
 }

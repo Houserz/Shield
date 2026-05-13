@@ -52,12 +52,12 @@ laptop when the ESP32 SoftAP is available.
 
 ## What it does
 
-- Two transports, same 16-byte binary frame format (see `streamer.h`).
+- Two transports, same 20-byte binary frame format (see `streamer.h`).
 - Saves every received frame to `pc_runs/RUN_<timestamp>/stream.bin`.
-  This is the PC-side mirror of what the ESP32 writes to SD.
-- Per-channel **live ring** (last 30 s @ full rate, blue line) +
-  **history bins** (1 Hz min/max envelope + mean line, gray) so you can see
-  both detail and full duration without exhausting RAM.
+  This is the PC-side live mirror of the same raw/processed values written to SD;
+  vector SD records are expanded to one stream packet per axis.
+- Per-channel **live ring** overlays raw and processed samples, plus
+  **history bins** (1 Hz min/max envelope + mean line) for long runs.
 - Toggle `View: full history` / `View: last 30s` to switch x-range.
 
 ## Replaying / analyzing later
@@ -71,12 +71,15 @@ dt = np.dtype([
     ('magic',  '<u2'),
     ('sid',    'u1'),
     ('axis',   'u1'),
+    ('kind',   'u1'),   # 0=raw, 1=processed
+    ('flags',  'u1'),
+    ('reserved', '<u2'),
     ('seq',    '<u4'),
     ('ts_ms',  '<u4'),
     ('value',  '<f4'),
 ])
 arr = np.fromfile('pc_runs/RUN_xxx/stream.bin', dtype=dt)
-mask = (arr['sid'] == 9) & (arr['axis'] == 1)   # accel.x
+mask = (arr['sid'] == 9) & (arr['axis'] == 1) & (arr['kind'] == 1)  # processed accel.x
 t = (arr['ts_ms'][mask] - arr['ts_ms'][mask][0]) / 1000.0
 v = arr['value'][mask]
 ```

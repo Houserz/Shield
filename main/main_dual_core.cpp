@@ -122,7 +122,8 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .enabled = true,  // Disabled for testing
         .hw_config = &vibration_gpio_cfg,
         .init = vibration_init,
-        .read_sample = vibration_read_sample
+        .read_sample = vibration_read_sample,
+        .process_sample = NULL
     },
     // [2] ACS723 Current Sensor - Medium Tier
     {
@@ -132,7 +133,8 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .enabled = true,
         .hw_config = NULL,
         .init = current_init,
-        .read_sample = current_read_sample
+        .read_sample = current_read_sample,
+        .process_sample = NULL
     },
     // [3] MPL3115A2 Pressure Sensor - Slow Tier
     {
@@ -142,7 +144,8 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .enabled = true,
         .hw_config = &mpl3115_i2c_cfg,
         .init = mpl3115_init,
-        .read_sample = mpl3115_read_sample
+        .read_sample = mpl3115_read_sample,
+        .process_sample = NULL
     },
     // [4] MCP9808 Temperature Sensor - Slow Tier
     {
@@ -152,7 +155,8 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .enabled = true,
         .hw_config = &mcp9808_i2c_cfg,
         .init = mcp9808_init,
-        .read_sample = mcp9808_read_sample
+        .read_sample = mcp9808_read_sample,
+        .process_sample = NULL
     },
     // [5] INMP441 Microphone - Fast Tier (high sample rate)
     {
@@ -162,7 +166,8 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .enabled = true,  // Disabled for testing
         .hw_config = &inmp441_i2s_cfg,
         .init = inmp441_init,
-        .read_sample = inmp441_read_sample
+        .read_sample = inmp441_read_sample,
+        .process_sample = NULL
     },
     // [6] 751-1015-ND Photodiode - Medium Tier (medium sample rate)
     {
@@ -172,7 +177,8 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .enabled = true,
         .hw_config = NULL,
         .init = photodiode_init,
-        .read_sample = photodiode_read_sample
+        .read_sample = photodiode_read_sample,
+        .process_sample = NULL
     },
     // [7] BNO085 Magnetometer - Fast Tier
     {
@@ -182,7 +188,8 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .enabled = true,
         .hw_config = &bno085_imu,
         .init = mag_init,
-        .read_sample = mag_read_sample
+        .read_sample = mag_read_sample,
+        .process_sample = mag_process_sample
     },
     // [8] BNO085 Gyroscope - Fast Tier
     {
@@ -192,7 +199,8 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .enabled = true,
         .hw_config = &bno085_imu,
         .init = gyro_init,
-        .read_sample = gyro_read_sample
+        .read_sample = gyro_read_sample,
+        .process_sample = gyro_process_sample
     },
     // [9] BNO085 Accelerometer - Fast Tier
     {
@@ -202,9 +210,149 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .enabled = true,
         .hw_config = &bno085_imu,
         .init = accel_init,
-        .read_sample = accel_read_sample
+        .read_sample = accel_read_sample,
+        .process_sample = accel_process_sample
     }
 };
+
+static uint8_t sensor_axis_count(const SensorContext_t *sensor) {
+    if (!sensor) return 1;
+    switch (sensor->type) {
+        case SENSOR_TYPE_ACCELEROMETER:
+        case SENSOR_TYPE_GYROSCOPE:
+        case SENSOR_TYPE_MAGNETOMETER:
+            return 3;
+        default:
+            return 1;
+    }
+}
+
+static void copy_sensor_data(float *dst, const float *src, uint8_t axis_count) {
+    for (uint8_t i = 0; i < 3; i++) {
+        dst[i] = (i < axis_count) ? src[i] : 0.0f;
+    }
+}
+
+static bool process_sensor_sample(SensorContext_t *sensor,
+                                  const float *raw,
+                                  float *processed,
+                                  uint8_t *flags_out) {
+    uint8_t axis_count = sensor_axis_count(sensor);
+
+    if (sensor && sensor->process_sample &&
+        sensor->process_sample(sensor, raw, processed, flags_out)) {
+        return true;
+    }
+
+    copy_sensor_data(processed, raw, axis_count);
+    if (flags_out) {
+        *flags_out = DATA_FLAG_PROCESSED_SAME_AS_RAW;
+    }
+    return true;
+}
+
+static sensor_data_record_v2_t make_sensor_record(uint32_t timestamp_ms,
+                                                  const SensorContext_t *sensor,
+                                                  data_kind_t kind,
+                                                  uint8_t flags,
+                                                  const float *data) {
+    sensor_data_record_v2_t rec = {
+        .timestamp_ms = timestamp_ms,
+        .sensor_id = (uint8_t)sensor->id,
+        .kind = (uint8_t)kind,
+        .axis_count = sensor_axis_count(sensor),
+        .flags = flags,
+        .data = {0.0f, 0.0f, 0.0f}
+    };
+    copy_sensor_data(rec.data, data, rec.axis_count);
+    return rec;
+}
+
+static void note_record_stored(const sensor_data_record_v2_t *rec, int tier_hz) {
+    if (!rec) return;
+
+    if (tier_hz == 1000) {
+        statistics.fast_records++;
+    } else if (tier_hz == 200) {
+        statistics.medium_records++;
+    } else if (tier_hz == 50) {
+        statistics.slow_records++;
+    }
+
+    if (rec->kind == DATA_KIND_RAW) {
+        statistics.raw_records++;
+    } else if (rec->kind == DATA_KIND_PROCESSED) {
+        statistics.processed_records++;
+    }
+
+    if (rec->sensor_id <= MAX_SENSOR_ID) {
+        statistics.sensor_records[rec->sensor_id]++;
+    }
+}
+
+static void note_logical_sample(const SensorContext_t *sensor) {
+    if (!sensor) return;
+
+    if (sensor->sampling_rate_hz == 1000) {
+        statistics.fast_samples++;
+    } else if (sensor->sampling_rate_hz == 200) {
+        statistics.medium_samples++;
+    } else if (sensor->sampling_rate_hz == 50) {
+        statistics.slow_samples++;
+    }
+
+    if ((uint8_t)sensor->id <= MAX_SENSOR_ID) {
+        statistics.sensor_samples[(uint8_t)sensor->id]++;
+    }
+}
+
+static bool enqueue_fast_record(const sensor_data_record_v2_t *rec) {
+    streamer_publish_record(rec);
+    fast_queue_msg_t msg = {
+        .type = QUEUE_MSG_DATA,
+        .data = *rec
+    };
+
+    if (xQueueSend(fast_queue, &msg, 0) != pdTRUE) {
+        statistics.queue_overruns++;
+        return false;
+    }
+
+    note_record_stored(rec, 1000);
+    return true;
+}
+
+static bool enqueue_medium_record(const sensor_data_record_v2_t *rec) {
+    streamer_publish_record(rec);
+    medium_queue_msg_t msg = {
+        .type = QUEUE_MSG_DATA,
+        .data = *rec
+    };
+
+    if (xQueueSend(medium_queue, &msg, 0) != pdTRUE) {
+        statistics.queue_overruns++;
+        return false;
+    }
+
+    note_record_stored(rec, 200);
+    return true;
+}
+
+static bool enqueue_slow_record(const sensor_data_record_v2_t *rec) {
+    streamer_publish_record(rec);
+    slow_queue_msg_t msg = {
+        .type = QUEUE_MSG_DATA,
+        .data = *rec
+    };
+
+    if (xQueueSend(slow_queue, &msg, 0) != pdTRUE) {
+        statistics.queue_overruns++;
+        return false;
+    }
+
+    note_record_stored(rec, 50);
+    return true;
+}
 
 // ==================== Core 0 Acquisition Tasks ====================
 
@@ -220,25 +368,21 @@ void vTaskFast(void *pvParameters) {
         for (int i = 0; i < NUM_SENSORS; i++) {
             if (!my_sensors[i].enabled || my_sensors[i].sampling_rate_hz != 1000) continue;
 
-            float data[3] = {0};
-            if (my_sensors[i].read_sample(&my_sensors[i], data)) {
-                fast_queue_msg_t msg = {
-                    .type = QUEUE_MSG_DATA,
-                    .data = {
-                        .timestamp_ms = get_timestamp_ms(),
-                        .sensor_id = (uint8_t)my_sensors[i].id,
-                        .reserved = {0},
-                        .data = {data[0], data[1], data[2]}
-                    }
-                };
+            float raw[3] = {0.0f, 0.0f, 0.0f};
+            if (my_sensors[i].read_sample(&my_sensors[i], raw)) {
+                float processed[3] = {0.0f, 0.0f, 0.0f};
+                uint8_t processed_flags = DATA_FLAG_NONE;
+                uint32_t timestamp_ms = get_timestamp_ms();
+                process_sensor_sample(&my_sensors[i], raw, processed, &processed_flags);
 
-                streamer_publish_fast(&msg.data);
+                sensor_data_record_v2_t raw_rec =
+                    make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_RAW, DATA_FLAG_NONE, raw);
+                sensor_data_record_v2_t processed_rec =
+                    make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_PROCESSED, processed_flags, processed);
 
-                if (xQueueSend(fast_queue, &msg, 0) != pdTRUE) {
-                    statistics.queue_overruns++;
-                } else {
-                    statistics.fast_samples++;
-                }
+                enqueue_fast_record(&raw_rec);
+                enqueue_fast_record(&processed_rec);
+                note_logical_sample(&my_sensors[i]);
             }
         }
 
@@ -259,25 +403,21 @@ void vTaskMedium(void *pvParameters) {
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
             if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 200) {
-                float data = 0.0f;
-                if (my_sensors[i].read_sample(&my_sensors[i], &data)) {
-                    medium_queue_msg_t msg = {
-                        .type = QUEUE_MSG_DATA,
-                        .data = {
-                            .timestamp_ms = get_timestamp_ms(),
-                            .sensor_id = (uint8_t)my_sensors[i].id,
-                            .reserved = {0},
-                            .data = data
-                        }
-                    };
+                float raw[3] = {0.0f, 0.0f, 0.0f};
+                if (my_sensors[i].read_sample(&my_sensors[i], raw)) {
+                    float processed[3] = {0.0f, 0.0f, 0.0f};
+                    uint8_t processed_flags = DATA_FLAG_NONE;
+                    uint32_t timestamp_ms = get_timestamp_ms();
+                    process_sensor_sample(&my_sensors[i], raw, processed, &processed_flags);
 
-                    streamer_publish_medium(&msg.data);
+                    sensor_data_record_v2_t raw_rec =
+                        make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_RAW, DATA_FLAG_NONE, raw);
+                    sensor_data_record_v2_t processed_rec =
+                        make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_PROCESSED, processed_flags, processed);
 
-                    if (xQueueSend(medium_queue, &msg, 0) != pdTRUE) {
-                        statistics.queue_overruns++;
-                    } else {
-                        statistics.medium_samples++;
-                    }
+                    enqueue_medium_record(&raw_rec);
+                    enqueue_medium_record(&processed_rec);
+                    note_logical_sample(&my_sensors[i]);
                 }
             }
         }
@@ -299,25 +439,21 @@ void vTaskSlow(void *pvParameters) {
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
             if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 50) {
-                float data = 0.0f;
-                if (my_sensors[i].read_sample(&my_sensors[i], &data)) {
-                    slow_queue_msg_t msg = {
-                        .type = QUEUE_MSG_DATA,
-                        .data = {
-                            .timestamp_ms = get_timestamp_ms(),
-                            .sensor_id = (uint8_t)my_sensors[i].id,
-                            .reserved = {0},
-                            .data = data
-                        }
-                    };
+                float raw[3] = {0.0f, 0.0f, 0.0f};
+                if (my_sensors[i].read_sample(&my_sensors[i], raw)) {
+                    float processed[3] = {0.0f, 0.0f, 0.0f};
+                    uint8_t processed_flags = DATA_FLAG_NONE;
+                    uint32_t timestamp_ms = get_timestamp_ms();
+                    process_sensor_sample(&my_sensors[i], raw, processed, &processed_flags);
 
-                    streamer_publish_slow(&msg.data);
+                    sensor_data_record_v2_t raw_rec =
+                        make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_RAW, DATA_FLAG_NONE, raw);
+                    sensor_data_record_v2_t processed_rec =
+                        make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_PROCESSED, processed_flags, processed);
 
-                    if (xQueueSend(slow_queue, &msg, 0) != pdTRUE) {
-                        statistics.queue_overruns++;
-                    } else {
-                        statistics.slow_samples++;
-                    }
+                    enqueue_slow_record(&raw_rec);
+                    enqueue_slow_record(&processed_rec);
+                    note_logical_sample(&my_sensors[i]);
                 }
             }
         }
@@ -339,9 +475,11 @@ void vTaskSDWriter(void *pvParameters) {
     medium_queue_msg_t medium_msg;
     slow_queue_msg_t slow_msg;
     
-    uint32_t last_stats_update = 0;
+    uint32_t last_flush_time = 0;
+    uint32_t last_metadata_update = 0;
+    uint32_t empty_after_stop_since = 0;
     
-    while (system_state == DAQ_STATE_RUNNING) {
+    while (true) {
         bool has_data = false;
         
         // Process Fast queue
@@ -374,19 +512,37 @@ void vTaskSDWriter(void *pvParameters) {
             }
         }
         
-        // Periodically flush buffers and update statistics (every second)
+        // Periodically flush buffers; metadata is much less frequent to reduce FAT churn.
         uint32_t current_time = get_timestamp_ms();
-        if (current_time - last_stats_update > 1000) {
+        if (current_time - last_flush_time > 1000) {
             sd_flush_all_buffers();
-            statistics.duration_ms = current_time;
-            
-            // Update metadata
+            if (system_state == DAQ_STATE_RUNNING) {
+                statistics.duration_ms = current_time;
+            }
+            last_flush_time = current_time;
+        }
+
+        if (current_time - last_metadata_update > 60000) {
             const run_session_t *session = sd_get_current_session();
             if (session->is_active) {
                 metadata_update_statistics(session->meta_file, &statistics);
             }
-            
-            last_stats_update = current_time;
+
+            last_metadata_update = current_time;
+        }
+
+        bool queues_empty =
+            uxQueueMessagesWaiting(fast_queue) == 0 &&
+            uxQueueMessagesWaiting(medium_queue) == 0 &&
+            uxQueueMessagesWaiting(slow_queue) == 0;
+        if (system_state != DAQ_STATE_RUNNING && queues_empty) {
+            if (empty_after_stop_since == 0) {
+                empty_after_stop_since = current_time;
+            } else if (current_time - empty_after_stop_since > 200) {
+                break;
+            }
+        } else {
+            empty_after_stop_since = 0;
         }
         
         // If no data, rest a bit
@@ -559,6 +715,7 @@ extern "C" void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     // Finalize metadata
+    metadata_update_statistics(session->meta_file, &statistics);
     metadata_finalize(session->meta_file);
     ESP_LOGI(TAG, "Metadata finalized");
 
@@ -577,6 +734,9 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Stats: fast=%"PRIu32" medium=%"PRIu32" slow=%"PRIu32" overruns=%"PRIu32" sd_errors=%"PRIu32,
              statistics.fast_samples, statistics.medium_samples, statistics.slow_samples,
              statistics.queue_overruns, statistics.sd_errors);
+    ESP_LOGI(TAG, "Records: fast=%"PRIu32" medium=%"PRIu32" slow=%"PRIu32" raw=%"PRIu32" processed=%"PRIu32,
+             statistics.fast_records, statistics.medium_records, statistics.slow_records,
+             statistics.raw_records, statistics.processed_records);
     ESP_LOGI(TAG, "Stream: usb_sent=%"PRIu32" wifi_sent=%"PRIu32" drops=%"PRIu32,
              streamer_get_sent_usb(), streamer_get_sent_wifi(), streamer_get_drops());
 }

@@ -35,8 +35,8 @@ static const char *TAG = "streamer";
 #define WIFI_AP_MAX_CONN    2
 #define TCP_PORT            3333
 
-#define USB_QUEUE_LEN       1024              // ~16 KB
-#define WIFI_QUEUE_LEN      512               // ~8 KB
+#define USB_QUEUE_LEN       2048              // ~40 KB with V2 packets
+#define WIFI_QUEUE_LEN      1024              // ~20 KB with V2 packets
 #define USB_TX_BUF          4096
 
 // ==================== State ====================
@@ -83,27 +83,26 @@ static inline void publish_pkt_(const stream_pkt_t *pkt)
 #endif
 }
 
-// Fast-tier sensors that are *scalar* (only data[0] is meaningful).
-// Vector sensors (mag=7, gyro=8, accel=9) emit 3 packets with axis=1,2,3.
-static inline bool is_scalar_fast_sensor_(uint8_t sid)
-{
-    return (sid == 1)   // SW-420 Vibration
-        || (sid == 5);  // INMP441 Microphone
-}
-
-void streamer_publish_fast(const fast_data_record_t *rec)
+void streamer_publish_record(const sensor_data_record_v2_t *rec)
 {
     if (!rec) return;
     stream_pkt_t pkt = {
         .magic = STREAM_MAGIC_LE,
         .sensor_id = rec->sensor_id,
         .axis = 0,
+        .kind = rec->kind,
+        .flags = rec->flags,
+        .reserved = 0,
         .seq = 0,
         .timestamp_ms = rec->timestamp_ms,
         .value = 0.0f,
     };
 
-    if (is_scalar_fast_sensor_(rec->sensor_id)) {
+    uint8_t axis_count = rec->axis_count;
+    if (axis_count == 0) axis_count = 1;
+    if (axis_count > 3) axis_count = 3;
+
+    if (axis_count == 1) {
         pkt.axis  = 0;
         pkt.value = rec->data[0];
         pkt.seq   = (uint32_t)atomic_fetch_add(&s_seq, 1);
@@ -111,7 +110,7 @@ void streamer_publish_fast(const fast_data_record_t *rec)
         return;
     }
 
-    for (uint8_t a = 0; a < 3; ++a) {
+    for (uint8_t a = 0; a < axis_count; ++a) {
         pkt.axis = (uint8_t)(a + 1);          // 1=x, 2=y, 3=z
         pkt.value = rec->data[a];
         pkt.seq = (uint32_t)atomic_fetch_add(&s_seq, 1);
@@ -119,32 +118,19 @@ void streamer_publish_fast(const fast_data_record_t *rec)
     }
 }
 
+void streamer_publish_fast(const fast_data_record_t *rec)
+{
+    streamer_publish_record(rec);
+}
+
 void streamer_publish_medium(const medium_data_record_t *rec)
 {
-    if (!rec) return;
-    stream_pkt_t pkt = {
-        .magic = STREAM_MAGIC_LE,
-        .sensor_id = rec->sensor_id,
-        .axis = 0,
-        .seq = (uint32_t)atomic_fetch_add(&s_seq, 1),
-        .timestamp_ms = rec->timestamp_ms,
-        .value = rec->data,
-    };
-    publish_pkt_(&pkt);
+    streamer_publish_record(rec);
 }
 
 void streamer_publish_slow(const slow_data_record_t *rec)
 {
-    if (!rec) return;
-    stream_pkt_t pkt = {
-        .magic = STREAM_MAGIC_LE,
-        .sensor_id = rec->sensor_id,
-        .axis = 0,
-        .seq = (uint32_t)atomic_fetch_add(&s_seq, 1),
-        .timestamp_ms = rec->timestamp_ms,
-        .value = rec->data,
-    };
-    publish_pkt_(&pkt);
+    streamer_publish_record(rec);
 }
 
 uint32_t streamer_get_drops(void)     { return atomic_load(&s_drops); }
@@ -157,7 +143,7 @@ static void usb_streamer_task(void *arg)
 {
     stream_pkt_t pkt;
     // Coalesce a few packets per write to reduce syscall overhead.
-    static uint8_t tx_buf[16 * 32];
+    static uint8_t tx_buf[sizeof(stream_pkt_t) * 32];
 
     while (1) {
         if (xQueueReceive(s_usb_queue, &pkt, portMAX_DELAY) != pdTRUE) continue;
@@ -333,7 +319,7 @@ static void wifi_streamer_task(void *arg)
 
         stream_pkt_t pkt;
         // Coalesce up to 32 packets per send().
-        static uint8_t tx[16 * 32];
+        static uint8_t tx[sizeof(stream_pkt_t) * 32];
 
         while (1) {
             if (xQueueReceive(s_wifi_queue, &pkt, pdMS_TO_TICKS(2000)) != pdTRUE) {

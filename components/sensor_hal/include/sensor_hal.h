@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "driver/i2c.h"
+#include "data_types.h"
 
 // Sensor type enumeration
 typedef enum {
@@ -30,7 +31,14 @@ typedef struct SensorContext {
     // Virtual function: initialize
     bool (*init)(struct SensorContext *ctx);
     // Virtual function: read sample data
+    // Returns raw physical-unit data before processing.
     bool (*read_sample)(struct SensorContext *ctx, float *data_out);
+    // Optional virtual function: process raw data into processed data.
+    // Implementations should set DATA_FLAG_* bits in flags_out.
+    bool (*process_sample)(struct SensorContext *ctx,
+                           const float *raw_in,
+                           float *processed_out,
+                           uint8_t *flags_out);
 } SensorContext_t;
 
 // ==================== Hardware Configuration Structures ====================
@@ -110,9 +118,17 @@ bool ads1115_read_voltage(const ads1115_config_t *cfg, uint16_t channel, float *
 
 // ==================== Driver Function Declarations ====================
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // BNO085 IMU (SPI, 1kHz)
 bool bno085_init(SensorContext_t *ctx);
 bool bno085_read_sample(SensorContext_t *ctx, float *data_out);
+
+bool accel_process_sample(SensorContext_t *ctx, const float *raw_in, float *processed_out, uint8_t *flags_out);
+bool gyro_process_sample(SensorContext_t *ctx, const float *raw_in, float *processed_out, uint8_t *flags_out);
+bool mag_process_sample(SensorContext_t *ctx, const float *raw_in, float *processed_out, uint8_t *flags_out);
 
 // SW-420 Vibration Sensor (GPIO, 1kHz)
 bool vibration_init(SensorContext_t *ctx);
@@ -137,5 +153,9 @@ bool inmp441_read_sample(SensorContext_t *ctx, float *data_out);
 // BPW34 Photodiode (ADS1115 A0, 200Hz)
 bool photodiode_init(SensorContext_t *ctx);
 bool photodiode_read_sample(SensorContext_t *ctx, float *data_out);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // SENSOR_HAL_H

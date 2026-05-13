@@ -12,55 +12,52 @@
 #include <stdbool.h>
 
 // ==================== Queue Configuration ====================
-#define FAST_QUEUE_SIZE     300     // Fast-tier queue (accel/gyro/mag + vibration + microphone)
-#define MEDIUM_QUEUE_SIZE   40      // Medium-tier queue (current + photodiode)
-#define SLOW_QUEUE_SIZE     10      // Slow-tier queue (pressure + temperature)
+#define FAST_QUEUE_SIZE     600     // Fast-tier queue (raw+processed records)
+#define MEDIUM_QUEUE_SIZE   80      // Medium-tier queue (raw+processed records)
+#define SLOW_QUEUE_SIZE     20      // Slow-tier queue (raw+processed records)
+
+#define MAX_SENSOR_ID       9
+
+// ==================== Data Kind / Flags ====================
+
+typedef enum {
+    DATA_KIND_RAW = 0,
+    DATA_KIND_PROCESSED = 1
+} data_kind_t;
+
+#define DATA_FLAG_NONE                  0x00u
+#define DATA_FLAG_PROCESSED_SAME_AS_RAW 0x01u
+#define DATA_FLAG_FILTER_ACTIVE         0x02u
+#define DATA_FLAG_FILTER_SPIKE          0x04u
 
 // ==================== Binary Data Packet Formats ====================
 
 /**
- * @brief Fast data record (Accel/Gyro/Mag, Vibration, Microphone)
- * 
- * File: fast_data.bin
- * Sample rate: 1kHz
- * Size: 16 bytes/record
- * Sensor IDs: 1=Vibration, 5=Microphone, 7=Magnetometer, 8=Gyroscope, 9=Accelerometer
+ * @brief Unified V2 sensor data record
+ *
+ * File: fast_data.bin / medium_data.bin / slow_data.bin
+ * Size: 20 bytes/record
+ * raw = physical-unit sample before processing
+ * processed = raw after the active per-sensor processing stage
  */
 typedef struct __attribute__((packed)) {
     uint32_t timestamp_ms;    // Timestamp (milliseconds)
-    uint8_t sensor_id;        // Sensor ID (1, 5, 7, 8, or 9)
-    uint8_t reserved[3];      // Padding for alignment
-    float data[3];            // Sensor data (scalar: data[0] only; vector: x,y,z)
-} fast_data_record_t;
+    uint8_t sensor_id;        // Sensor ID (1..9)
+    uint8_t kind;             // data_kind_t: raw or processed
+    uint8_t axis_count;       // scalar=1, vector=3
+    uint8_t flags;            // DATA_FLAG_* bits
+    float data[3];            // scalar: data[0]; vector: x,y,z
+} sensor_data_record_v2_t;
 
-/**
- * @brief Medium data record (Current, Photodiode)
- * 
- * File: medium_data.bin
- * Sample rate: 200Hz
- * Size: 12 bytes/record
- * Sensor IDs: 2=Current, 6=Photodiode
- */
-typedef struct __attribute__((packed)) {
-    uint32_t timestamp_ms;    // Timestamp (milliseconds)
-    uint8_t sensor_id;        // Sensor ID (2=Current, 6=Photodiode)
-    uint8_t reserved[3];      // Padding for alignment
-    float data;               // Sensor data (current in A, or photodiode voltage/level)
-} medium_data_record_t;
+typedef sensor_data_record_v2_t fast_data_record_t;
+typedef sensor_data_record_v2_t medium_data_record_t;
+typedef sensor_data_record_v2_t slow_data_record_t;
 
-/**
- * @brief Slow data record (Pressure + Temperature)
- * 
- * File: slow_data.bin
- * Sample rate: 50Hz
- * Size: 12 bytes/record
- */
-typedef struct __attribute__((packed)) {
-    uint32_t timestamp_ms;    // Timestamp (milliseconds)
-    uint8_t sensor_id;        // Sensor ID (3=Pressure, 4=Temperature)
-    uint8_t reserved[3];      // Padding for alignment
-    float data;               // Sensor data
-} slow_data_record_t;
+#ifdef __cplusplus
+static_assert(sizeof(sensor_data_record_v2_t) == 20, "sensor_data_record_v2_t must stay 20 bytes");
+#else
+_Static_assert(sizeof(sensor_data_record_v2_t) == 20, "sensor_data_record_v2_t must stay 20 bytes");
+#endif
 
 // ==================== Queue Message Types ====================
 
@@ -117,6 +114,13 @@ typedef struct {
     uint32_t fast_samples;    // Number of fast samples
     uint32_t medium_samples;  // Number of medium samples
     uint32_t slow_samples;    // Number of slow samples
+    uint32_t fast_records;    // Number of fast-tier records stored
+    uint32_t medium_records;  // Number of medium-tier records stored
+    uint32_t slow_records;    // Number of slow-tier records stored
+    uint32_t raw_records;     // Number of raw records stored
+    uint32_t processed_records; // Number of processed records stored
+    uint32_t sensor_samples[MAX_SENSOR_ID + 1]; // Logical samples by sensor ID
+    uint32_t sensor_records[MAX_SENSOR_ID + 1]; // Stored records by sensor ID
     uint32_t queue_overruns;  // Queue overflow count
     uint32_t sd_errors;       // SD card error count
     uint32_t duration_ms;     // Running duration (milliseconds)

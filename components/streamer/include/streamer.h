@@ -12,16 +12,19 @@
  *                                          ├──► usb_queue ──► usb task (Core 1)
  *                                          └──► wifi_queue ─► wifi task (Core 1)
  *
- * Frame format on the wire (16 bytes, little-endian):
+ * Frame format on the wire (20 bytes, little-endian):
  *
  *   offset  size  field
  *   ----------------------------------------
  *      0     2    magic           = 0xAA55
  *      2     1    sensor_id       (matches SensorContext_t.id)
  *      3     1    axis            (0=scalar, 1=x, 2=y, 3=z)
- *      4     4    seq             (monotonic counter per packet)
- *      8     4    timestamp_ms    (ESP32 uptime, ms)
- *     12     4    value           (float32, processed value)
+ *      4     1    kind            (0=raw, 1=processed)
+ *      5     1    flags           DATA_FLAG_* bits from data_types.h
+ *      6     2    reserved
+ *      8     4    seq             (monotonic counter per packet)
+ *     12     4    timestamp_ms    (ESP32 uptime, ms)
+ *     16     4    value           (float32)
  */
 #ifndef STREAMER_H
 #define STREAMER_H
@@ -41,10 +44,19 @@ typedef struct __attribute__((packed)) {
     uint16_t magic;
     uint8_t  sensor_id;
     uint8_t  axis;
+    uint8_t  kind;
+    uint8_t  flags;
+    uint16_t reserved;
     uint32_t seq;
     uint32_t timestamp_ms;
     float    value;
 } stream_pkt_t;
+
+#ifdef __cplusplus
+static_assert(sizeof(stream_pkt_t) == 20, "stream_pkt_t must stay 20 bytes");
+#else
+_Static_assert(sizeof(stream_pkt_t) == 20, "stream_pkt_t must stay 20 bytes");
+#endif
 
 /**
  * @brief Initialize streamer (USB CDC + Wi-Fi SoftAP).
@@ -55,9 +67,10 @@ void streamer_init(void);
 
 /**
  * @brief Non-blocking publish APIs called from acquisition tasks.
- * fast: 3-axis (emits 3 packets), medium/slow: scalar (emits 1).
+ * A vector record emits one packet per axis; scalar emits one packet.
  * If both backend queues are full, packet is dropped.
  */
+void streamer_publish_record(const sensor_data_record_v2_t *rec);
 void streamer_publish_fast(const fast_data_record_t *rec);
 void streamer_publish_medium(const medium_data_record_t *rec);
 void streamer_publish_slow(const slow_data_record_t *rec);
