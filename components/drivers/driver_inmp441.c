@@ -10,6 +10,7 @@
  */
 
 #include "sensor_hal.h"
+#include "gaussian.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -138,6 +139,9 @@ bool inmp441_read_sample(SensorContext_t *ctx, float *data_out) {
     esp_err_t ret = i2s_channel_read(s_inmp441.rx_handle, buf, sizeof(buf), &bytes_read, pdMS_TO_TICKS(100));
     if (ret != ESP_OK || bytes_read == 0) {
         *data_out = s_inmp441.last_rms;
+#if NOISE_INJECTION
+        *data_out += *data_out * rand_gaussian();
+#endif
         return true;  // Non-fatal: return last valid
     }
 
@@ -145,6 +149,9 @@ bool inmp441_read_sample(SensorContext_t *ctx, float *data_out) {
     size_t num_pairs = bytes_read / (2 * sizeof(uint32_t));
     if (num_pairs == 0) {
         *data_out = s_inmp441.last_rms;
+#if NOISE_INJECTION
+        *data_out += *data_out * rand_gaussian();
+#endif
         return true;
     }
 
@@ -160,5 +167,8 @@ bool inmp441_read_sample(SensorContext_t *ctx, float *data_out) {
     float rms = (rms_left > rms_right) ? rms_left : rms_right;
     s_inmp441.last_rms = rms;
     *data_out = rms;
+#if NOISE_INJECTION
+    *data_out += *data_out * rand_gaussian();
+#endif
     return true;
 }

@@ -19,6 +19,7 @@
 
 #include "sensor_hal.h"
 #include "esp_log.h"
+#include "gaussian.h"
 
 static const char *TAG = "acs723";
 
@@ -52,5 +53,8 @@ bool current_read_sample(SensorContext_t *ctx, float *data_out) {
     // IP = (VIOUT - VIOUT(Q)) / Sens
     float voltage_divided = voltage * VOLTAGE_DIVIDER_RATIO; // Account for voltage divider
     *data_out = (voltage_divided - ACS723_VIOUT_Q) / (ACS723_SENS_MV_PER_A / 1000.0f);
+#if NOISE_INJECTION
+    *data_out += *data_out * rand_gaussian();
+#endif
     return true;
 }

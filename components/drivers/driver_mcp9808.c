@@ -14,6 +14,7 @@
  */
 
 #include "sensor_hal.h"
+#include "gaussian.h"
 
 #include "driver/i2c.h"
 #include "freertos/FreeRTOS.h"
@@ -240,5 +241,8 @@ bool mcp9808_read_sample(SensorContext_t *ctx, float *data_out) {
     }
 
     *data_out = (float)temp_raw * MCP9808_TEMP_LSB_C;
+#if NOISE_INJECTION
+    *data_out += *data_out * rand_gaussian();
+#endif
     return true;
 }

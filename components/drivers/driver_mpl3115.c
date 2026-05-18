@@ -16,6 +16,7 @@
  */
 
 #include "sensor_hal.h"
+#include "gaussian.h"
 
 #include "driver/i2c.h"
 #include "freertos/FreeRTOS.h"
@@ -229,6 +230,9 @@ bool mpl3115_read_sample(SensorContext_t *ctx, float *data_out) {
     uint32_t raw = ((uint32_t)p_buf[0] << 12) | ((uint32_t)p_buf[1] << 4) | (p_buf[2] >> 4);
     float pa = (float)raw * MPL3115_PA_PER_COUNT;
     *data_out = pa / 1000.0f;
+#if NOISE_INJECTION
+    *data_out += *data_out * rand_gaussian();
+#endif
 
     // Trigger next conversion immediately
     mpl3115_trigger_oneshot(port, addr);

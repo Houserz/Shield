@@ -8,6 +8,7 @@
 
 #include "sensor_hal.h"
 #include "esp_log.h"
+#include "gaussian.h"
 
 static const char *TAG = "bpw34";
 
@@ -27,5 +28,9 @@ bool photodiode_init(SensorContext_t *ctx) {
 
 bool photodiode_read_sample(SensorContext_t *ctx, float *data_out) {
     if (data_out == NULL) return false;
-    return ads1115_read_voltage(&s_ads1115_cfg, ADS1115_CH0, data_out);
+    if (!ads1115_read_voltage(&s_ads1115_cfg, ADS1115_CH0, data_out)) return false;
+#if NOISE_INJECTION
+    *data_out += *data_out * rand_gaussian();
+#endif
+    return true;
 }

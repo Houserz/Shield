@@ -1,6 +1,7 @@
 #include "sensor_hal.h"
 #include "esp_log.h"
 #include "BNO08x.hpp"
+#include "gaussian.h"
 
 static const char *TAG = "bno085_accel";
 static BNO08x *imu = nullptr;
@@ -29,5 +30,10 @@ extern "C" bool accel_read_sample(SensorContext_t *ctx, float *data_out) {
     data_out[0] = d.x;
     data_out[1] = d.y;
     data_out[2] = d.z;
+#if NOISE_INJECTION
+    data_out[0] += data_out[0] * rand_gaussian();
+    data_out[1] += data_out[1] * rand_gaussian();
+    data_out[2] += data_out[2] * rand_gaussian();
+#endif
     return true;
 }

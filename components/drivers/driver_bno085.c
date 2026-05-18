@@ -8,6 +8,7 @@
  */
 
 #include "sensor_hal.h"
+#include "gaussian.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -430,7 +431,10 @@ bool bno085_read_sample(SensorContext_t *ctx, float *data_out) {
     uint8_t rx_buf[SHTP_MAX_PACKET];
     int n = bno085_read_packet(rx_buf, sizeof(rx_buf));
     if (n < SHTP_HEADER_LEN) {
-        *data_out = s_bno085.last_accel_magnitude;  // Return last valid
+        *data_out = s_bno085.last_accel_magnitude;
+#if NOISE_INJECTION
+        *data_out += *data_out * rand_gaussian();
+#endif
         return true;  // No new packet, non-fatal
     }
 
@@ -440,6 +444,9 @@ bool bno085_read_sample(SensorContext_t *ctx, float *data_out) {
 
     if (channel != SHTP_CHANNEL_REPORTS || payload_len < 10) {
         *data_out = s_bno085.last_accel_magnitude;
+#if NOISE_INJECTION
+        *data_out += *data_out * rand_gaussian();
+#endif
         return true;
     }
 
@@ -454,6 +461,9 @@ bool bno085_read_sample(SensorContext_t *ctx, float *data_out) {
             if (parse_accelerometer(payload + offset, payload_len - offset, &mag)) {
                 s_bno085.last_accel_magnitude = mag;
                 *data_out = mag;
+#if NOISE_INJECTION
+                *data_out += *data_out * rand_gaussian();
+#endif
                 return true;
             }
         }
@@ -461,5 +471,8 @@ bool bno085_read_sample(SensorContext_t *ctx, float *data_out) {
     }
 
     *data_out = s_bno085.last_accel_magnitude;
+#if NOISE_INJECTION
+    *data_out += *data_out * rand_gaussian();
+#endif
     return true;
 }
