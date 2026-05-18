@@ -5,13 +5,13 @@
 
 #include <stdbool.h>
 
-#define NOISE_INJECTION true   // set to false to disable noise injection
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 float rand_gaussian(void);
+bool noise_injection_is_enabled(void);
+void noise_injection_set_enabled(bool enabled);
 
 #ifdef __cplusplus
 }

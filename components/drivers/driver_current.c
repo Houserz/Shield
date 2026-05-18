@@ -17,44 +17,49 @@
  *   IP (A) = (VIOUT - VIOUT(Q)) / Sens
  */
 
-#include "sensor_hal.h"
 #include "esp_log.h"
 #include "gaussian.h"
+#include "sensor_hal.h"
 
-static const char *TAG = "acs723";
+static const char* TAG = "acs723";
 
-#define ACS723_VCC_V          5.0f    // VCC supply voltage (must be 5V)
-#define ACS723_SENS_MV_PER_A  400.0f  // Sensitivity: change if using different variant
-#define ACS723_VIOUT_Q        (ACS723_VCC_V * 0.5f)  // Zero-current output voltage (2.5V)
-#define VOLTAGE_DIVIDER_RATIO     1.6f // Vout on current sensor is divided to fit within ADC input range.
+#define ACS723_VCC_V 5.0f  // VCC supply voltage (must be 5V)
+#define ACS723_SENS_MV_PER_A \
+  400.0f  // Sensitivity: change if using different variant
+#define ACS723_VIOUT_Q \
+  (ACS723_VCC_V * 0.5f)  // Zero-current output voltage (2.5V)
+#define VOLTAGE_DIVIDER_RATIO \
+  1.6f  // Vout on current sensor is divided to fit within ADC input range.
 
 static ads1115_config_t s_ads1115_cfg = {
-    .i2c_port  = I2C_NUM_0,
-    .i2c_addr  = ADS1115_I2C_ADDR,
-    .pga       = ADS1115_PGA_4096MV,  // ±4.096V, covers 0~5V VIOUT with headroom
+    .i2c_port = I2C_NUM_0,
+    .i2c_addr = ADS1115_I2C_ADDR,
+    .pga = ADS1115_PGA_4096MV,  // ±4.096V, covers 0~5V VIOUT with headroom
     .data_rate = ADS1115_DR_860SPS,
 };
 
-bool current_init(SensorContext_t *ctx) {
-    ESP_LOGI(TAG, "ACS723 init OK (ADS1115 A1, I2C 0x%02X, sens=%.0f mV/A)",
-             ADS1115_I2C_ADDR, ACS723_SENS_MV_PER_A);
-    return true;
+bool current_init(SensorContext_t* ctx) {
+  ESP_LOGI(TAG, "ACS723 init OK (ADS1115 A1, I2C 0x%02X, sens=%.0f mV/A)",
+           ADS1115_I2C_ADDR, ACS723_SENS_MV_PER_A);
+  return true;
 }
 
-bool current_read_sample(SensorContext_t *ctx, float *data_out) {
-    if (data_out == NULL) return false;
+bool current_read_sample(SensorContext_t* ctx, float* data_out) {
+  if (data_out == NULL) return false;
 
-    float voltage = 0.0f;
-    if (!ads1115_read_voltage(&s_ads1115_cfg, ADS1115_CH1, &voltage)) {
-        return false;
-    }
+  float voltage = 0.0f;
+  if (!ads1115_read_voltage(&s_ads1115_cfg, ADS1115_CH1, &voltage)) {
+    return false;
+  }
 
-    // Convert voltage to current (A)
-    // IP = (VIOUT - VIOUT(Q)) / Sens
-    float voltage_divided = voltage * VOLTAGE_DIVIDER_RATIO; // Account for voltage divider
-    *data_out = (voltage_divided - ACS723_VIOUT_Q) / (ACS723_SENS_MV_PER_A / 1000.0f);
-#if NOISE_INJECTION
+  // Convert voltage to current (A)
+  // IP = (VIOUT - VIOUT(Q)) / Sens
+  float voltage_divided =
+      voltage * VOLTAGE_DIVIDER_RATIO;  // Account for voltage divider
+  *data_out =
+      (voltage_divided - ACS723_VIOUT_Q) / (ACS723_SENS_MV_PER_A / 1000.0f);
+  if (noise_injection_is_enabled()) {
     *data_out += *data_out * rand_gaussian();
-#endif
-    return true;
+  }
+  return true;
 }
