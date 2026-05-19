@@ -685,9 +685,9 @@ extern "C" void app_main(void) {
     uint32_t acq_start_ms = get_timestamp_ms();
     ESP_LOGI(TAG, "Acquisition START at %"PRIu32" ms since boot", acq_start_ms);
     
-    // Continue to run data acquisition until button press or 15 hours have elapsed
+    // Continue to run data acquisition until button press or 20 hours have elapsed
     while (gpio_get_level(BUTTON_PIN) && system_state == DAQ_STATE_RUNNING &&
-           (get_timestamp_ms() - acq_start_ms < 15UL * 3600000UL)) {
+           (get_timestamp_ms() - acq_start_ms < 12UL * 3600000UL)) {
       vTaskDelay(pdMS_TO_TICKS(100));
     }
     //Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS() overflow

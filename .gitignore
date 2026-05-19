@@ -6,8 +6,6 @@ tools/*
 !tools/pc_viewer.py
 !tools/readme.md
 !tools/requirements.txt
-sdkconfig
-sdkconfig.old
 *.pyc
 __pycache__/
 .clangd
