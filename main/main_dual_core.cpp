@@ -41,7 +41,7 @@ bool mag_read_sample(SensorContext_t* ctx, float* data_out);
 #define STATUS_LED_PIN GPIO_NUM_4
 #define BUTTON_PIN GPIO_NUM_46
 
-#define RUN_DURATION 15UL
+#define RUN_DURATION 90UL  // Currently configured to run for 90 minutes
 #define NOISE_INJECTION_DELAY 30UL
 #define MS_PER_HR 3600000UL
 #define MS_PER_MIN 60000UL
@@ -510,24 +510,13 @@ extern "C" void app_main(void) {
   while (gpio_get_level(BUTTON_PIN) && system_state == DAQ_STATE_RUNNING &&
          (get_timestamp_ms() - acq_start_ms < RUN_DURATION * MS_PER_MIN)) {
     if (NOISE_INJECTION && !noise_injection_is_enabled() &&
-        get_timestamp_ms() - acq_start_ms <
+        get_timestamp_ms() - acq_start_ms >=
             NOISE_INJECTION_DELAY * MS_PER_MIN) {
       noise_injection_set_enabled(true);
+      ESP_LOGI(TAG, "============ Noise injection ENABLED ============");
     }
     vTaskDelay(pdMS_TO_TICKS(100));
   }
-  // Run for 15 hours. Split into 1-hour chunks to avoid pdMS_TO_TICKS()
-  // overflow if (!TESTING_SHORT_DURATION) {
-  //     for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING;
-  //     hour++) {
-  //         vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
-  //         ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
-  //                 hour, get_timestamp_ms() - acq_start_ms);
-  //     }
-  // } else {
-  //     // Testing: run for 15 seconds
-  //     vTaskDelay(pdMS_TO_TICKS(15 * 1000));
-  // }
 
   uint32_t acq_end_ms = get_timestamp_ms();
   uint32_t acq_duration_ms = acq_end_ms - acq_start_ms;
