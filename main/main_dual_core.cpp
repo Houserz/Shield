@@ -21,6 +21,7 @@ extern "C" {
     #include "sensor_hal.h"
     #include "data_types.h"
     #include "sd_storage.h"
+    #include "signal_processing.h"
     #include "streamer.h"
     #include "driver/i2c.h"
     #include "driver/gpio.h"
@@ -52,7 +53,8 @@ static QueueHandle_t slow_queue = NULL;
 
 // ==================== Global State ====================
 static daq_state_t system_state = DAQ_STATE_IDLE;
-static daq_statistics_t statistics = {0};
+static daq_statistics_t statistics = {};
+static lowpass_filter_t denoise_filters[MAX_SENSOR_ID + 1] = {};
 
 // ==================== Hardware Configuration Instances ====================
 
@@ -70,6 +72,7 @@ static bno08x_config_t bno085_spi_cfg = []() {
     cfg.io_int  = GPIO_NUM_5;
     cfg.io_rst  = GPIO_NUM_6;
     cfg.spi_peripheral = SPI3_HOST;
+    cfg.sclk_speed = 1000000UL; // Conservative speed for reliable BNO085 boot/product-ID reads.
     return cfg;
 }();
 
@@ -101,6 +104,7 @@ static hal_i2c_config_t mcp9808_i2c_cfg = {
 
 // INMP441 - I2S Configuration (high sample rate)
 // BCK/WS/SD use GPIO45/47/48 to avoid conflict with other peripherals
+#define ENABLE_INMP441_MICROPHONE 0
 static inmp441_i2s_config_t inmp441_i2s_cfg = {
     .i2s_port = 0,         // I2S_NUM_0
     .bck_pin = 45,          // GPIO45 (bit clock)
@@ -163,7 +167,7 @@ static SensorContext_t my_sensors[NUM_SENSORS] = {
         .id = 5,
         .type = SENSOR_TYPE_MICROPHONE,
         .sampling_rate_hz = 1000,
-        .enabled = true,  // Disabled for testing
+        .enabled = ENABLE_INMP441_MICROPHONE,
         .hw_config = &inmp441_i2s_cfg,
         .init = inmp441_init,
         .read_sample = inmp441_read_sample,
@@ -233,22 +237,75 @@ static void copy_sensor_data(float *dst, const float *src, uint8_t axis_count) {
     }
 }
 
-static bool process_sensor_sample(SensorContext_t *sensor,
-                                  const float *raw,
-                                  float *processed,
-                                  uint8_t *flags_out) {
-    uint8_t axis_count = sensor_axis_count(sensor);
+static bool sensor_has_noise(const SensorContext_t *sensor) {
+    return sensor && sensor->type != SENSOR_TYPE_VIBRATION;
+}
 
-    if (sensor && sensor->process_sample &&
-        sensor->process_sample(sensor, raw, processed, flags_out)) {
-        return true;
+static bool sensor_is_bno085(const SensorContext_t *sensor) {
+    if (!sensor) return false;
+    return sensor->type == SENSOR_TYPE_MAGNETOMETER ||
+           sensor->type == SENSOR_TYPE_GYROSCOPE ||
+           sensor->type == SENSOR_TYPE_ACCELEROMETER;
+}
+
+static void set_bno085_sensors_enabled(bool enabled) {
+    for (int i = 0; i < NUM_SENSORS; i++) {
+        if (sensor_is_bno085(&my_sensors[i])) {
+            my_sensors[i].enabled = enabled;
+        }
     }
+}
 
-    copy_sensor_data(processed, raw, axis_count);
+static float sensor_denoise_cutoff_hz(const SensorContext_t *sensor) {
+    if (!sensor) return 8.0f;
+    switch (sensor->type) {
+        case SENSOR_TYPE_TEMP:
+        case SENSOR_TYPE_PRESSURE:
+            return 2.0f;
+        default:
+            return 8.0f;
+    }
+}
+
+static void build_noisy_sample(const SensorContext_t *sensor,
+                               const float *clean,
+                               float *noisy,
+                               uint8_t *flags_out) {
+    bool inject_noise = sensor_has_noise(sensor);
+    signal_make_noisy(clean, noisy, sensor_axis_count(sensor), inject_noise);
     if (flags_out) {
-        *flags_out = DATA_FLAG_PROCESSED_SAME_AS_RAW;
+        *flags_out = inject_noise ? DATA_FLAG_NOISE_INJECTED : DATA_FLAG_SAME_AS_CLEAN;
     }
-    return true;
+}
+
+static void build_denoised_sample(const SensorContext_t *sensor,
+                                  uint32_t timestamp_ms,
+                                  const float *noisy,
+                                  float *denoised,
+                                  uint8_t *flags_out) {
+    if (!sensor_has_noise(sensor)) {
+        copy_sensor_data(denoised, noisy, sensor_axis_count(sensor));
+        if (flags_out) {
+            *flags_out = DATA_FLAG_SAME_AS_CLEAN;
+        }
+        return;
+    }
+
+    uint8_t sensor_id = (uint8_t)sensor->id;
+    if (sensor_id > MAX_SENSOR_ID) {
+        copy_sensor_data(denoised, noisy, sensor_axis_count(sensor));
+        if (flags_out) {
+            *flags_out = DATA_FLAG_SAME_AS_CLEAN;
+        }
+        return;
+    }
+
+    signal_lowpass_update(&denoise_filters[sensor_id], noisy, denoised,
+                          sensor_axis_count(sensor), timestamp_ms,
+                          sensor_denoise_cutoff_hz(sensor));
+    if (flags_out) {
+        *flags_out = DATA_FLAG_DENOISE_ACTIVE;
+    }
 }
 
 static sensor_data_record_v2_t make_sensor_record(uint32_t timestamp_ms,
@@ -264,7 +321,9 @@ static sensor_data_record_v2_t make_sensor_record(uint32_t timestamp_ms,
         .flags = flags,
         .data = {0.0f, 0.0f, 0.0f}
     };
-    copy_sensor_data(rec.data, data, rec.axis_count);
+    for (uint8_t i = 0; i < 3; i++) {
+        rec.data[i] = (i < rec.axis_count) ? data[i] : 0.0f;
+    }
     return rec;
 }
 
@@ -279,10 +338,12 @@ static void note_record_stored(const sensor_data_record_v2_t *rec, int tier_hz) 
         statistics.slow_records++;
     }
 
-    if (rec->kind == DATA_KIND_RAW) {
-        statistics.raw_records++;
-    } else if (rec->kind == DATA_KIND_PROCESSED) {
-        statistics.processed_records++;
+    if (rec->kind == DATA_KIND_CLEAN) {
+        statistics.clean_records++;
+    } else if (rec->kind == DATA_KIND_NOISY) {
+        statistics.noisy_records++;
+    } else if (rec->kind == DATA_KIND_DENOISED) {
+        statistics.denoised_records++;
     }
 
     if (rec->sensor_id <= MAX_SENSOR_ID) {
@@ -354,11 +415,50 @@ static bool enqueue_slow_record(const sensor_data_record_v2_t *rec) {
     return true;
 }
 
+static bool enqueue_record_for_sensor(const SensorContext_t *sensor,
+                                      const sensor_data_record_v2_t *rec) {
+    if (!sensor || !rec) return false;
+
+    if (sensor->sampling_rate_hz == 1000) {
+        return enqueue_fast_record(rec);
+    } else if (sensor->sampling_rate_hz == 200) {
+        return enqueue_medium_record(rec);
+    } else if (sensor->sampling_rate_hz == 50) {
+        return enqueue_slow_record(rec);
+    }
+
+    statistics.queue_overruns++;
+    return false;
+}
+
+static void enqueue_sensor_triplet(SensorContext_t *sensor,
+                                   uint32_t timestamp_ms,
+                                   const float *clean) {
+    float noisy[3] = {0.0f, 0.0f, 0.0f};
+    float denoised[3] = {0.0f, 0.0f, 0.0f};
+    uint8_t noisy_flags = DATA_FLAG_NONE;
+    uint8_t denoised_flags = DATA_FLAG_NONE;
+
+    build_noisy_sample(sensor, clean, noisy, &noisy_flags);
+    build_denoised_sample(sensor, timestamp_ms, noisy, denoised, &denoised_flags);
+
+    sensor_data_record_v2_t clean_rec =
+        make_sensor_record(timestamp_ms, sensor, DATA_KIND_CLEAN, DATA_FLAG_NONE, clean);
+    sensor_data_record_v2_t noisy_rec =
+        make_sensor_record(timestamp_ms, sensor, DATA_KIND_NOISY, noisy_flags, noisy);
+    sensor_data_record_v2_t denoised_rec =
+        make_sensor_record(timestamp_ms, sensor, DATA_KIND_DENOISED, denoised_flags, denoised);
+
+    enqueue_record_for_sensor(sensor, &clean_rec);
+    enqueue_record_for_sensor(sensor, &noisy_rec);
+    enqueue_record_for_sensor(sensor, &denoised_rec);
+}
+
 // ==================== Core 0 Acquisition Tasks ====================
 
 /**
  * @brief Fast task (1kHz, Core 0)
- * For high-speed sensors (BNO085 raw sensors, SW-420 Vibration, INMP441 Microphone)
+ * For high-speed sensors (BNO085 clean sensors, SW-420 Vibration, INMP441 Microphone)
  */
 void vTaskFast(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -368,20 +468,10 @@ void vTaskFast(void *pvParameters) {
         for (int i = 0; i < NUM_SENSORS; i++) {
             if (!my_sensors[i].enabled || my_sensors[i].sampling_rate_hz != 1000) continue;
 
-            float raw[3] = {0.0f, 0.0f, 0.0f};
-            if (my_sensors[i].read_sample(&my_sensors[i], raw)) {
-                float processed[3] = {0.0f, 0.0f, 0.0f};
-                uint8_t processed_flags = DATA_FLAG_NONE;
+            float clean[3] = {0.0f, 0.0f, 0.0f};
+            if (my_sensors[i].read_sample(&my_sensors[i], clean)) {
                 uint32_t timestamp_ms = get_timestamp_ms();
-                process_sensor_sample(&my_sensors[i], raw, processed, &processed_flags);
-
-                sensor_data_record_v2_t raw_rec =
-                    make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_RAW, DATA_FLAG_NONE, raw);
-                sensor_data_record_v2_t processed_rec =
-                    make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_PROCESSED, processed_flags, processed);
-
-                enqueue_fast_record(&raw_rec);
-                enqueue_fast_record(&processed_rec);
+                enqueue_sensor_triplet(&my_sensors[i], timestamp_ms, clean);
                 note_logical_sample(&my_sensors[i]);
             }
         }
@@ -403,20 +493,10 @@ void vTaskMedium(void *pvParameters) {
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
             if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 200) {
-                float raw[3] = {0.0f, 0.0f, 0.0f};
-                if (my_sensors[i].read_sample(&my_sensors[i], raw)) {
-                    float processed[3] = {0.0f, 0.0f, 0.0f};
-                    uint8_t processed_flags = DATA_FLAG_NONE;
+                float clean[3] = {0.0f, 0.0f, 0.0f};
+                if (my_sensors[i].read_sample(&my_sensors[i], clean)) {
                     uint32_t timestamp_ms = get_timestamp_ms();
-                    process_sensor_sample(&my_sensors[i], raw, processed, &processed_flags);
-
-                    sensor_data_record_v2_t raw_rec =
-                        make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_RAW, DATA_FLAG_NONE, raw);
-                    sensor_data_record_v2_t processed_rec =
-                        make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_PROCESSED, processed_flags, processed);
-
-                    enqueue_medium_record(&raw_rec);
-                    enqueue_medium_record(&processed_rec);
+                    enqueue_sensor_triplet(&my_sensors[i], timestamp_ms, clean);
                     note_logical_sample(&my_sensors[i]);
                 }
             }
@@ -439,20 +519,10 @@ void vTaskSlow(void *pvParameters) {
     while (system_state == DAQ_STATE_RUNNING) {
         for (int i = 0; i < NUM_SENSORS; i++) {
             if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 50) {
-                float raw[3] = {0.0f, 0.0f, 0.0f};
-                if (my_sensors[i].read_sample(&my_sensors[i], raw)) {
-                    float processed[3] = {0.0f, 0.0f, 0.0f};
-                    uint8_t processed_flags = DATA_FLAG_NONE;
+                float clean[3] = {0.0f, 0.0f, 0.0f};
+                if (my_sensors[i].read_sample(&my_sensors[i], clean)) {
                     uint32_t timestamp_ms = get_timestamp_ms();
-                    process_sensor_sample(&my_sensors[i], raw, processed, &processed_flags);
-
-                    sensor_data_record_v2_t raw_rec =
-                        make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_RAW, DATA_FLAG_NONE, raw);
-                    sensor_data_record_v2_t processed_rec =
-                        make_sensor_record(timestamp_ms, &my_sensors[i], DATA_KIND_PROCESSED, processed_flags, processed);
-
-                    enqueue_slow_record(&raw_rec);
-                    enqueue_slow_record(&processed_rec);
+                    enqueue_sensor_triplet(&my_sensors[i], timestamp_ms, clean);
                     note_logical_sample(&my_sensors[i]);
                 }
             }
@@ -598,10 +668,17 @@ extern "C" void app_main(void) {
 
 
     if (!bno085_imu.initialize()) {
-        ESP_LOGE(TAG, "BNO085 initialize() FAILED - aborting");
-        return;
+        ESP_LOGE(TAG,
+                 "BNO085 pins: SPI%d MOSI=%d MISO=%d SCLK=%d CS=%d INT=%d RST=%d",
+                 bno085_spi_cfg.spi_peripheral, bno085_spi_cfg.io_mosi,
+                 bno085_spi_cfg.io_miso, bno085_spi_cfg.io_sclk,
+                 bno085_spi_cfg.io_cs, bno085_spi_cfg.io_int,
+                 bno085_spi_cfg.io_rst);
+        ESP_LOGW(TAG, "BNO085 initialize() FAILED - continuing without IMU sensors");
+        set_bno085_sensors_enabled(false);
+    } else {
+        ESP_LOGI(TAG, "BNO085 initialized OK");
     }
-    ESP_LOGI(TAG, "BNO085 initialized OK");
 
     // Initialize all sensors
     const char *sensor_names[] = {"SW-420 Vibration", "ACS723 Current", "MPL3115 Pressure", "MCP9808 Temp",
@@ -683,7 +760,7 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(vTaskSDWriter, "SDWriter", 8192, NULL, 5, NULL, 1);
 
     uint32_t acq_start_ms = get_timestamp_ms();
-    ESP_LOGI(TAG, "Acquisition START at %"PRIu32" ms since boot", acq_start_ms);
+    ESP_LOGI(TAG, "Acquisition START at %" PRIu32 " ms since boot", acq_start_ms);
     
     // Continue to run data acquisition until button press or 20 hours have elapsed
     while (gpio_get_level(BUTTON_PIN) && system_state == DAQ_STATE_RUNNING &&
@@ -694,7 +771,7 @@ extern "C" void app_main(void) {
     // if (!TESTING_SHORT_DURATION) {
     //     for (int hour = 1; hour <= 15 && system_state == DAQ_STATE_RUNNING; hour++) {
     //         vTaskDelay(pdMS_TO_TICKS(3600 * 1000));
-    //         ESP_LOGI(TAG, "Hour %d/15 completed (%"PRIu32" ms elapsed)",
+    //         ESP_LOGI(TAG, "Hour %d/15 completed (%" PRIu32 " ms elapsed)",
     //                 hour, get_timestamp_ms() - acq_start_ms);
     //     }
     // } else {
@@ -708,7 +785,7 @@ extern "C" void app_main(void) {
 
     // Stop acquisition
     system_state = DAQ_STATE_STOPPING;
-    ESP_LOGI(TAG, "Acquisition STOP at %"PRIu32" ms since boot (ran %"PRIu32" ms = %.2f hours)",
+    ESP_LOGI(TAG, "Acquisition STOP at %" PRIu32 " ms since boot (ran %" PRIu32 " ms = %.2f hours)",
              acq_end_ms, acq_duration_ms, acq_duration_ms / 3600000.0f);
 
     // Wait for tasks to end
@@ -731,12 +808,12 @@ extern "C" void app_main(void) {
     gpio_set_level(STATUS_LED_PIN, 0);
 
     ESP_LOGI(TAG, "========== Project SHIELD finished ==========");
-    ESP_LOGI(TAG, "Stats: fast=%"PRIu32" medium=%"PRIu32" slow=%"PRIu32" overruns=%"PRIu32" sd_errors=%"PRIu32,
+    ESP_LOGI(TAG, "Stats: fast=%" PRIu32 " medium=%" PRIu32 " slow=%" PRIu32 " overruns=%" PRIu32 " sd_errors=%" PRIu32,
              statistics.fast_samples, statistics.medium_samples, statistics.slow_samples,
              statistics.queue_overruns, statistics.sd_errors);
-    ESP_LOGI(TAG, "Records: fast=%"PRIu32" medium=%"PRIu32" slow=%"PRIu32" raw=%"PRIu32" processed=%"PRIu32,
+    ESP_LOGI(TAG, "Records: fast=%" PRIu32 " medium=%" PRIu32 " slow=%" PRIu32 " clean=%" PRIu32 " noisy=%" PRIu32 " denoised=%" PRIu32,
              statistics.fast_records, statistics.medium_records, statistics.slow_records,
-             statistics.raw_records, statistics.processed_records);
-    ESP_LOGI(TAG, "Stream: usb_sent=%"PRIu32" wifi_sent=%"PRIu32" drops=%"PRIu32,
+             statistics.clean_records, statistics.noisy_records, statistics.denoised_records);
+    ESP_LOGI(TAG, "Stream: usb_sent=%" PRIu32 " wifi_sent=%" PRIu32 " drops=%" PRIu32,
              streamer_get_sent_usb(), streamer_get_sent_wifi(), streamer_get_drops());
 }

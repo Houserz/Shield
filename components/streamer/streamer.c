@@ -35,7 +35,7 @@ static const char *TAG = "streamer";
 #define WIFI_AP_MAX_CONN    2
 #define TCP_PORT            3333
 
-#define USB_QUEUE_LEN       2048              // ~40 KB with V2 packets
+#define USB_QUEUE_LEN       4096              // ~80 KB with V2 packets
 #define WIFI_QUEUE_LEN      1024              // ~20 KB with V2 packets
 #define USB_TX_BUF          4096
 

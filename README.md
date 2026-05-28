@@ -67,9 +67,9 @@ On the **SD card**:
 
 ```
 /sdcard/RUN_XXX/
-├── fast_data.bin       # fast-tier raw+processed V2 records
-├── medium_data.bin     # medium-tier raw+processed V2 records
-├── slow_data.bin       # slow-tier raw+processed V2 records
+├── fast_data.bin       # fast-tier clean+noisy+denoised V2 records
+├── medium_data.bin     # medium-tier clean+noisy+denoised V2 records
+├── slow_data.bin       # slow-tier clean+noisy+denoised V2 records
 ├── meta.json           # Session metadata
 └── events.log          # Event log
 ```
@@ -80,7 +80,7 @@ Each SD data file contains packed `sensor_data_record_v2_t` records:
 typedef struct __attribute__((packed)) {
     uint32_t timestamp_ms;
     uint8_t  sensor_id;
-    uint8_t  kind;        // 0=raw, 1=processed
+    uint8_t  kind;        // 0=clean, 1=noisy, 2=denoised
     uint8_t  axis_count;  // scalar=1, vector=3
     uint8_t  flags;       // DATA_FLAG_* bits
     float    data[3];
@@ -162,15 +162,14 @@ idf.py -p /dev/ttyUSB0 monitor
 ## Real-Time Live Viewer
 
 USB-primary / Wi-Fi-backup live streaming to a laptop, with a PyQtGraph
-viewer that shows raw signal + rolling mean + ±1σ band per channel and
+viewer that shows clean, noisy, and denoised signals per channel and
 mirrors every frame to `pc_runs/RUN_<timestamp>/stream.bin`.
 
 Quick start:
 
 ```bash
-pip install -r tools/requirements.txt
 idf.py flash                      # do NOT add `monitor` while streaming
-python tools/pc_viewer.py
+conda run -n miniproject1 python tools/pc_viewer.py
 ```
 
 Build flags, Wi-Fi mode, offline replay and troubleshooting are documented
@@ -264,7 +263,7 @@ void sd_storage_deinit(void);
 |--------|-------|
 | Max Sample Rate | 1kHz |
 | Sensor Channels | 9 (3 IMU + 6 others) |
-| Total Data Rate | raw+processed binary records; depends on effective sensor rates |
+| Total Data Rate | clean+noisy+denoised binary records; depends on effective sensor rates |
 | Queue Latency | < 100ms |
 | SD Flush Interval | 1s or buffer full |
 

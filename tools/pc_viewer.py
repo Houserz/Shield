@@ -6,10 +6,11 @@ Layout
 ------
 A QTabWidget with one tab per sensor group. Each tab contains 1..3 panels.
 Every panel shows:
-    - raw samples (semi-transparent, axis-colored)
-    - processed samples (solid, axis-colored)
-    - processed rolling mean over the visible window (black, thin)
-    - +/- 1 sigma band around the processed mean (semi-transparent fill)
+    - clean samples (gray dotted)
+    - noisy samples (semi-transparent orange)
+    - denoised samples (solid, axis-colored)
+    - denoised rolling mean over the visible window (black, thin)
+    - +/- 1 sigma band around the denoised mean (semi-transparent fill)
     - title: "<channel>   Hz=...   Bias=...   Std=...   RMS=..."
 
 Two view modes:
@@ -27,7 +28,7 @@ Frame format (20 bytes LE)
     H  uint16 magic = 0xAA55      (bytes on the wire: 0x55 0xAA)
     B  uint8  sensor_id           (1..9)
     B  uint8  axis                (0=scalar, 1=x, 2=y, 3=z)
-    B  uint8  kind                (0=raw, 1=processed)
+    B  uint8  kind                (0=clean, 1=noisy, 2=denoised)
     B  uint8  flags               DATA_FLAG_* bits
     H  uint16 reserved
     I  uint32 seq                 (monotonic)
@@ -69,19 +70,21 @@ except ImportError:
 # Protocol
 # ====================================================================
 FRAME_MAGIC = 0xAA55
-DATA_KIND_RAW = 0
-DATA_KIND_PROCESSED = 1
+DATA_KIND_CLEAN = 0
+DATA_KIND_NOISY = 1
+DATA_KIND_DENOISED = 2
+VALID_DATA_KINDS = (DATA_KIND_CLEAN, DATA_KIND_NOISY, DATA_KIND_DENOISED)
 FRAME_FMT = "<HBBBBHIIf"
 FRAME_SIZE = struct.calcsize(FRAME_FMT)
 assert FRAME_SIZE == 20
 
 # (sensor_id, name, axis_names, unit, group_name, axis_color_rgb)
 SENSORS = {
-    1: ("vibration",   ["v"],            "raw",    "Other",  [(255, 90, 90)]),
+    1: ("vibration",   ["v"],            "binary", "Other",  [(255, 90, 90)]),
     2: ("current",     ["I"],            "A",      "Other",  [(255, 165, 0)]),
     3: ("pressure",    ["P"],            "Pa",     "Other",  [(120, 220, 120)]),
     4: ("temperature", ["T"],            "C",      "Other",  [(220, 220, 60)]),
-    5: ("microphone",  ["mic"],          "raw",    "Other",  [(180, 120, 220)]),
+    5: ("microphone",  ["mic"],          "rms",    "Other",  [(180, 120, 220)]),
     6: ("photodiode",  ["pd"],           "V",      "Other",  [(60, 200, 200)]),
     7: ("mag",         ["mx", "my", "mz"], "uT",   "Mag",
         [(220, 80, 80), (80, 200, 80), (80, 140, 240)]),
@@ -346,7 +349,7 @@ class Reader(threading.Thread):
                 i += 1
                 continue
             if (magic != FRAME_MAGIC or sid not in SENSORS or axis > 3 or
-                    kind not in (DATA_KIND_RAW, DATA_KIND_PROCESSED)):
+                    kind not in VALID_DATA_KINDS):
                 i += 1
                 continue
 
@@ -402,7 +405,7 @@ class Reader(threading.Thread):
 # Plot panel
 # ====================================================================
 class SensorPanel:
-    """One channel = raw overlay + processed trace + processed stats."""
+    """One channel = clean/noisy overlays + denoised trace + denoised stats."""
 
     def __init__(self, plot: pg.PlotItem, label: str, unit: str, color_rgb):
         self.plot = plot
@@ -410,7 +413,8 @@ class SensorPanel:
         self.unit = unit
         col = QtGui.QColor(*color_rgb)
         col_band = QtGui.QColor(*color_rgb, 28)
-        col_raw  = QtGui.QColor(80, 80, 80, 80)
+        col_clean = QtGui.QColor(70, 70, 70, 95)
+        col_noisy = QtGui.QColor(230, 120, 35, 115)
 
         plot.showGrid(x=True, y=True, alpha=0.2)
         plot.setLabel("left", f"{label} ({unit})")
@@ -424,8 +428,9 @@ class SensorPanel:
                                             brush=pg.mkBrush(col_band))
         plot.addItem(self.band_fill)
 
-        self.raw_curve  = plot.plot(pen=pg.mkPen(col_raw, width=0.8, style=QtCore.Qt.PenStyle.DotLine))
-        self.proc_curve = plot.plot(pen=pg.mkPen(col, width=1.8))
+        self.clean_curve = plot.plot(pen=pg.mkPen(col_clean, width=0.8, style=QtCore.Qt.PenStyle.DotLine))
+        self.noisy_curve = plot.plot(pen=pg.mkPen(col_noisy, width=0.9))
+        self.denoised_curve = plot.plot(pen=pg.mkPen(col, width=1.8))
         self.mean_curve = plot.plot(pen=pg.mkPen(QtGui.QColor(0, 0, 0), width=1.5))
 
     @staticmethod
@@ -471,48 +476,56 @@ class SensorPanel:
         self.plot.setYRange(float(y_lo), float(y_hi), padding=0.0)
 
     def update(self,
-               raw_live_t: np.ndarray, raw_live_v: np.ndarray,
-               raw_hist_t: np.ndarray, raw_hist_mean: np.ndarray,
-               proc_live_t: np.ndarray, proc_live_v: np.ndarray,
-               proc_hist_t: np.ndarray, proc_hist_mean: np.ndarray,
-               proc_hist_min: np.ndarray, proc_hist_max: np.ndarray, proc_hist_std: np.ndarray,
+               clean_live_t: np.ndarray, clean_live_v: np.ndarray,
+               clean_hist_t: np.ndarray, clean_hist_mean: np.ndarray,
+               noisy_live_t: np.ndarray, noisy_live_v: np.ndarray,
+               noisy_hist_t: np.ndarray, noisy_hist_mean: np.ndarray,
+               denoised_live_t: np.ndarray, denoised_live_v: np.ndarray,
+               denoised_hist_t: np.ndarray, denoised_hist_mean: np.ndarray,
+               denoised_hist_min: np.ndarray, denoised_hist_max: np.ndarray, denoised_hist_std: np.ndarray,
                x_lo: float, x_hi: float, view_mode: str,
                stats: tuple[float, float, float], rate_hz: float,
-               show_raw: bool, show_processed: bool, show_band: bool):
+               show_clean: bool, show_noisy: bool, show_denoised: bool, show_band: bool):
 
         if view_mode == "live":
-            self.raw_curve.setData(raw_live_t, raw_live_v) if show_raw else self.raw_curve.setData([], [])
-            self.proc_curve.setData(proc_live_t, proc_live_v) if show_processed else self.proc_curve.setData([], [])
-            self.mean_curve.setData(proc_hist_t, proc_hist_mean)
+            self.clean_curve.setData(clean_live_t, clean_live_v) if show_clean else self.clean_curve.setData([], [])
+            self.noisy_curve.setData(noisy_live_t, noisy_live_v) if show_noisy else self.noisy_curve.setData([], [])
+            self.denoised_curve.setData(denoised_live_t, denoised_live_v) if show_denoised else self.denoised_curve.setData([], [])
+            self.mean_curve.setData(denoised_hist_t, denoised_hist_mean)
             y_series = []
-            if show_raw:
-                y_series.append((raw_live_t, raw_live_v))
-            if show_processed:
-                y_series.append((proc_live_t, proc_live_v))
-            y_series.append((proc_hist_t, proc_hist_mean))
+            if show_clean:
+                y_series.append((clean_live_t, clean_live_v))
+            if show_noisy:
+                y_series.append((noisy_live_t, noisy_live_v))
+            if show_denoised:
+                y_series.append((denoised_live_t, denoised_live_v))
+            y_series.append((denoised_hist_t, denoised_hist_mean))
             if show_band:
-                band_lo = proc_hist_mean - proc_hist_std
-                band_hi = proc_hist_mean + proc_hist_std
-                self.band_lo.setData(proc_hist_t, band_lo)
-                self.band_hi.setData(proc_hist_t, band_hi)
-                y_series.extend([(proc_hist_t, band_lo), (proc_hist_t, band_hi)])
+                band_lo = denoised_hist_mean - denoised_hist_std
+                band_hi = denoised_hist_mean + denoised_hist_std
+                self.band_lo.setData(denoised_hist_t, band_lo)
+                self.band_hi.setData(denoised_hist_t, band_hi)
+                y_series.extend([(denoised_hist_t, band_lo), (denoised_hist_t, band_hi)])
             else:
                 self.band_lo.setData([], [])
                 self.band_hi.setData([], [])
         else:
-            self.raw_curve.setData(raw_hist_t, raw_hist_mean) if show_raw else self.raw_curve.setData([], [])
-            self.proc_curve.setData(proc_hist_t, proc_hist_mean) if show_processed else self.proc_curve.setData([], [])
-            self.mean_curve.setData(proc_hist_t, proc_hist_mean)
+            self.clean_curve.setData(clean_hist_t, clean_hist_mean) if show_clean else self.clean_curve.setData([], [])
+            self.noisy_curve.setData(noisy_hist_t, noisy_hist_mean) if show_noisy else self.noisy_curve.setData([], [])
+            self.denoised_curve.setData(denoised_hist_t, denoised_hist_mean) if show_denoised else self.denoised_curve.setData([], [])
+            self.mean_curve.setData(denoised_hist_t, denoised_hist_mean)
             y_series = []
-            if show_raw:
-                y_series.append((raw_hist_t, raw_hist_mean))
-            if show_processed:
-                y_series.append((proc_hist_t, proc_hist_mean))
-            y_series.append((proc_hist_t, proc_hist_mean))
+            if show_clean:
+                y_series.append((clean_hist_t, clean_hist_mean))
+            if show_noisy:
+                y_series.append((noisy_hist_t, noisy_hist_mean))
+            if show_denoised:
+                y_series.append((denoised_hist_t, denoised_hist_mean))
+            y_series.append((denoised_hist_t, denoised_hist_mean))
             if show_band:
-                self.band_lo.setData(proc_hist_t, proc_hist_min)
-                self.band_hi.setData(proc_hist_t, proc_hist_max)
-                y_series.extend([(proc_hist_t, proc_hist_min), (proc_hist_t, proc_hist_max)])
+                self.band_lo.setData(denoised_hist_t, denoised_hist_min)
+                self.band_hi.setData(denoised_hist_t, denoised_hist_max)
+                y_series.extend([(denoised_hist_t, denoised_hist_min), (denoised_hist_t, denoised_hist_max)])
             else:
                 self.band_lo.setData([], [])
                 self.band_hi.setData([], [])
@@ -587,14 +600,17 @@ class Viewer(QtWidgets.QMainWindow):
         self.btn_live.clicked.connect(lambda: self._set_view("live"))
         controls.addWidget(self.btn_full)
         controls.addWidget(self.btn_live)
-        self.chk_raw = QtWidgets.QCheckBox("raw")
-        self.chk_processed = QtWidgets.QCheckBox("processed")
+        self.chk_clean = QtWidgets.QCheckBox("clean")
+        self.chk_noisy = QtWidgets.QCheckBox("noisy")
+        self.chk_denoised = QtWidgets.QCheckBox("denoised")
         self.chk_band = QtWidgets.QCheckBox("stats band")
-        self.chk_raw.setChecked(True)
-        self.chk_processed.setChecked(True)
+        self.chk_clean.setChecked(True)
+        self.chk_noisy.setChecked(True)
+        self.chk_denoised.setChecked(True)
         self.chk_band.setChecked(False)
-        controls.addWidget(self.chk_raw)
-        controls.addWidget(self.chk_processed)
+        controls.addWidget(self.chk_clean)
+        controls.addWidget(self.chk_noisy)
+        controls.addWidget(self.chk_denoised)
         controls.addWidget(self.chk_band)
         controls.addStretch(1)
 
@@ -675,19 +691,23 @@ class Viewer(QtWidgets.QMainWindow):
 
         for key, panel in self.panels.items():
             sid, axis = key
-            raw_key = (sid, axis, DATA_KIND_RAW)
-            proc_key = (sid, axis, DATA_KIND_PROCESSED)
-            raw_s = snapshots.get(raw_key, empty)
-            proc_s = snapshots.get(proc_key, empty)
-            proc_ch = self.channels.get(proc_key)
-            stats = proc_ch.stats_alltime() if proc_ch is not None else (0.0, 0.0, 0.0)
-            rate_hz = proc_ch.rate_recent_hz() if proc_ch is not None else 0.0
-            panel.update(raw_s["lt"], raw_s["lv"], raw_s["ht"], raw_s["hmean"],
-                         proc_s["lt"], proc_s["lv"], proc_s["ht"], proc_s["hmean"],
-                         proc_s["hmin"], proc_s["hmax"], proc_s["hstd"],
+            clean_key = (sid, axis, DATA_KIND_CLEAN)
+            noisy_key = (sid, axis, DATA_KIND_NOISY)
+            denoised_key = (sid, axis, DATA_KIND_DENOISED)
+            clean_s = snapshots.get(clean_key, empty)
+            noisy_s = snapshots.get(noisy_key, empty)
+            denoised_s = snapshots.get(denoised_key, empty)
+            denoised_ch = self.channels.get(denoised_key)
+            stats = denoised_ch.stats_alltime() if denoised_ch is not None else (0.0, 0.0, 0.0)
+            rate_hz = denoised_ch.rate_recent_hz() if denoised_ch is not None else 0.0
+            panel.update(clean_s["lt"], clean_s["lv"], clean_s["ht"], clean_s["hmean"],
+                         noisy_s["lt"], noisy_s["lv"], noisy_s["ht"], noisy_s["hmean"],
+                         denoised_s["lt"], denoised_s["lv"], denoised_s["ht"], denoised_s["hmean"],
+                         denoised_s["hmin"], denoised_s["hmax"], denoised_s["hstd"],
                          x_lo, x_hi, self._view_mode, stats, rate_hz,
-                         self.chk_raw.isChecked(),
-                         self.chk_processed.isChecked(),
+                         self.chk_clean.isChecked(),
+                         self.chk_noisy.isChecked(),
+                         self.chk_denoised.isChecked(),
                          self.chk_band.isChecked())
 
         # status line
@@ -723,12 +743,14 @@ def main():
     channels: dict[tuple[int, int, int], ChannelBuf] = {}
     for sid, (name, axes, unit, _, _) in SENSORS.items():
         if len(axes) == 1:
-            channels[(sid, 0, DATA_KIND_RAW)] = ChannelBuf(name=f"{name}.raw", unit=unit)
-            channels[(sid, 0, DATA_KIND_PROCESSED)] = ChannelBuf(name=f"{name}.processed", unit=unit)
+            channels[(sid, 0, DATA_KIND_CLEAN)] = ChannelBuf(name=f"{name}.clean", unit=unit)
+            channels[(sid, 0, DATA_KIND_NOISY)] = ChannelBuf(name=f"{name}.noisy", unit=unit)
+            channels[(sid, 0, DATA_KIND_DENOISED)] = ChannelBuf(name=f"{name}.denoised", unit=unit)
         else:
             for ax_i, ax_name in enumerate(axes, start=1):
-                channels[(sid, ax_i, DATA_KIND_RAW)] = ChannelBuf(name=f"{name}.{ax_name}.raw", unit=unit)
-                channels[(sid, ax_i, DATA_KIND_PROCESSED)] = ChannelBuf(name=f"{name}.{ax_name}.processed", unit=unit)
+                channels[(sid, ax_i, DATA_KIND_CLEAN)] = ChannelBuf(name=f"{name}.{ax_name}.clean", unit=unit)
+                channels[(sid, ax_i, DATA_KIND_NOISY)] = ChannelBuf(name=f"{name}.{ax_name}.noisy", unit=unit)
+                channels[(sid, ax_i, DATA_KIND_DENOISED)] = ChannelBuf(name=f"{name}.{ax_name}.denoised", unit=unit)
 
     reader = Reader(args, channels, dump_path)
     reader.start()

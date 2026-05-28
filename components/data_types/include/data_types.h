@@ -12,23 +12,29 @@
 #include <stdbool.h>
 
 // ==================== Queue Configuration ====================
-#define FAST_QUEUE_SIZE     600     // Fast-tier queue (raw+processed records)
-#define MEDIUM_QUEUE_SIZE   80      // Medium-tier queue (raw+processed records)
-#define SLOW_QUEUE_SIZE     20      // Slow-tier queue (raw+processed records)
+#define FAST_QUEUE_SIZE     1200    // Fast-tier queue (clean+noisy+denoised records)
+#define MEDIUM_QUEUE_SIZE   180     // Medium-tier queue (clean+noisy+denoised records)
+#define SLOW_QUEUE_SIZE     60      // Slow-tier queue (clean+noisy+denoised records)
 
 #define MAX_SENSOR_ID       9
 
 // ==================== Data Kind / Flags ====================
 
 typedef enum {
-    DATA_KIND_RAW = 0,
-    DATA_KIND_PROCESSED = 1
+    DATA_KIND_CLEAN = 0,
+    DATA_KIND_NOISY = 1,
+    DATA_KIND_DENOISED = 2
 } data_kind_t;
 
 #define DATA_FLAG_NONE                  0x00u
-#define DATA_FLAG_PROCESSED_SAME_AS_RAW 0x01u
-#define DATA_FLAG_FILTER_ACTIVE         0x02u
-#define DATA_FLAG_FILTER_SPIKE          0x04u
+#define DATA_FLAG_SAME_AS_CLEAN         0x01u
+#define DATA_FLAG_NOISE_INJECTED        0x02u
+#define DATA_FLAG_DENOISE_ACTIVE        0x04u
+#define DATA_FLAG_FILTER_SPIKE          0x08u
+
+// Backward-compatible aliases for existing optional driver processing hooks.
+#define DATA_FLAG_PROCESSED_SAME_AS_RAW DATA_FLAG_SAME_AS_CLEAN
+#define DATA_FLAG_FILTER_ACTIVE         DATA_FLAG_DENOISE_ACTIVE
 
 // ==================== Binary Data Packet Formats ====================
 
@@ -37,13 +43,14 @@ typedef enum {
  *
  * File: fast_data.bin / medium_data.bin / slow_data.bin
  * Size: 20 bytes/record
- * raw = physical-unit sample before processing
- * processed = raw after the active per-sensor processing stage
+ * clean = physical-unit sample read directly from the sensor
+ * noisy = clean with synthetic multiplicative Gaussian noise
+ * denoised = noisy after the active real-time denoising stage
  */
 typedef struct __attribute__((packed)) {
     uint32_t timestamp_ms;    // Timestamp (milliseconds)
     uint8_t sensor_id;        // Sensor ID (1..9)
-    uint8_t kind;             // data_kind_t: raw or processed
+    uint8_t kind;             // data_kind_t: clean, noisy, or denoised
     uint8_t axis_count;       // scalar=1, vector=3
     uint8_t flags;            // DATA_FLAG_* bits
     float data[3];            // scalar: data[0]; vector: x,y,z
@@ -117,8 +124,9 @@ typedef struct {
     uint32_t fast_records;    // Number of fast-tier records stored
     uint32_t medium_records;  // Number of medium-tier records stored
     uint32_t slow_records;    // Number of slow-tier records stored
-    uint32_t raw_records;     // Number of raw records stored
-    uint32_t processed_records; // Number of processed records stored
+    uint32_t clean_records;   // Number of clean records stored
+    uint32_t noisy_records;   // Number of noisy records stored
+    uint32_t denoised_records; // Number of denoised records stored
     uint32_t sensor_samples[MAX_SENSOR_ID + 1]; // Logical samples by sensor ID
     uint32_t sensor_records[MAX_SENSOR_ID + 1]; // Stored records by sensor ID
     uint32_t queue_overruns;  // Queue overflow count

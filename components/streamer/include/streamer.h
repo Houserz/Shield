@@ -19,7 +19,7 @@
  *      0     2    magic           = 0xAA55
  *      2     1    sensor_id       (matches SensorContext_t.id)
  *      3     1    axis            (0=scalar, 1=x, 2=y, 3=z)
- *      4     1    kind            (0=raw, 1=processed)
+ *      4     1    kind            (0=clean, 1=noisy, 2=denoised)
  *      5     1    flags           DATA_FLAG_* bits from data_types.h
  *      6     2    reserved
  *      8     4    seq             (monotonic counter per packet)

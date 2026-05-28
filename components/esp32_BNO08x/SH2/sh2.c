@@ -745,6 +745,7 @@ static void getProdIdRx(sh2_t *pSh2, const uint8_t *payload, uint16_t len)
 }
 
 const sh2_Op_t getProdIdOp = {
+    .timeout_us = 1000000,
     .start = getProdIdStart,
     .rx = getProdIdRx,
 };

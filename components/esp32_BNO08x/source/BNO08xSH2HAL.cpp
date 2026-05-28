@@ -5,8 +5,25 @@
 
 #include "BNO08xSH2HAL.hpp"
 #include "BNO08x.hpp"
+#include <string.h>
 
 BNO08x* BNO08xSH2HAL::imu;
+uint8_t BNO08xSH2HAL::pending_rx[SH2_HAL_DMA_SIZE];
+int BNO08xSH2HAL::pending_rx_len = 0;
+
+static int parse_valid_packet_len(const uint8_t* buffer, unsigned max_len)
+{
+    if ((buffer == nullptr) || (max_len < 4U))
+        return 0;
+
+    uint16_t packet_sz = PARSE_PACKET_LENGTH(buffer);
+    packet_sz &= ~0x8000U;
+
+    if ((packet_sz < 4U) || (packet_sz > max_len))
+        return 0;
+
+    return static_cast<int>(packet_sz);
+}
 
 /**
  * @brief Sets the BNO08x driver object to be used with sh2 HAL lib callbacks.
@@ -18,6 +35,7 @@ BNO08x* BNO08xSH2HAL::imu;
 void BNO08xSH2HAL::set_hal_imu(BNO08x* hal_imu)
 {
     imu = hal_imu;
+    pending_rx_len = 0;
 }
 
 /**
@@ -55,29 +73,49 @@ void BNO08xSH2HAL::spi_close(sh2_Hal_t* self)
  */
 int BNO08xSH2HAL::spi_read(sh2_Hal_t* self, uint8_t* pBuffer, unsigned len, uint32_t* t_us)
 {
-    uint16_t packet_sz = 0;
-
-    // hint never asserted, fail transaction
-    if (!spi_wait_for_int())
+    if ((pBuffer == nullptr) || (len < 4U))
         return 0;
 
-    // assert chip select
-    gpio_set_level(imu->imu_config.io_cs, 0);
-
-    packet_sz = spi_read_sh2_packet_header(pBuffer);
-
-    if ((packet_sz > len) || (packet_sz == 0))
+    if (pending_rx_len > 0)
     {
-        gpio_set_level(imu->imu_config.io_cs, 1);
-        return 0;
+        const int packet_len = pending_rx_len;
+        pending_rx_len = 0;
+
+        if (static_cast<unsigned>(packet_len) <= len)
+        {
+            memcpy(pBuffer, pending_rx, packet_len);
+            return packet_len;
+        }
     }
 
-    packet_sz = spi_read_sh2_packet_body(pBuffer, packet_sz);
+    const bool init_phase = (imu->product_IDs.numEntries == 0U) && !imu->init_status.data_proc_task;
 
-    // de-assert chip select
+    // During startup the BNO085 may need host clocks even when HINT is already high.
+    // Runtime reads are still gated by HINT to avoid stimulating extra channel-0 packets.
+    if (!init_phase && !spi_wait_for_int())
+        return 0;
+
+    static uint8_t tx_dummy[SH2_HAL_DMA_SIZE];
+    const unsigned transfer_len = (len > sizeof(tx_dummy)) ? sizeof(tx_dummy) : len;
+    memset(tx_dummy, 0x00, transfer_len);
+
+    if (init_phase)
+        tx_dummy[0] = 0x04U; // valid empty SHTP packet: len=4, channel=0, seq=0
+
+    imu->spi_transaction.length = transfer_len * 8U;
+    imu->spi_transaction.rxlength = transfer_len * 8U;
+    imu->spi_transaction.tx_buffer = tx_dummy;
+    imu->spi_transaction.rx_buffer = pBuffer;
+    imu->spi_transaction.flags = 0;
+
+    gpio_set_level(imu->imu_config.io_cs, 0);
+    esp_err_t ret = spi_device_polling_transmit(imu->spi_hdl, &imu->spi_transaction);
     gpio_set_level(imu->imu_config.io_cs, 1);
 
-    return packet_sz;
+    if (ret != ESP_OK)
+        return 0;
+
+    return parse_valid_packet_len(pBuffer, len);
 }
 
 /**
@@ -91,24 +129,45 @@ int BNO08xSH2HAL::spi_read(sh2_Hal_t* self, uint8_t* pBuffer, unsigned len, uint
  */
 int BNO08xSH2HAL::spi_write(sh2_Hal_t* self, uint8_t* pBuffer, unsigned len)
 {
-    // hint never asserted, fail transaction
-    if (!spi_wait_for_int())
+    if ((pBuffer == nullptr) || (len == 0U))
         return 0;
 
-    // setup transaction to send packet
-    imu->spi_transaction.length = len * 8;
-    imu->spi_transaction.rxlength = 0;
-    imu->spi_transaction.tx_buffer = pBuffer;
-    imu->spi_transaction.rx_buffer = NULL;
+    const bool init_phase = (imu->product_IDs.numEntries == 0U) && !imu->init_status.data_proc_task;
+
+    if (!init_phase && !spi_wait_for_int())
+        return 0;
+
+    static uint8_t tx_full[SH2_HAL_DMA_SIZE];
+    static uint8_t rx_discard[SH2_HAL_DMA_SIZE];
+    const unsigned transfer_len = init_phase ? sizeof(tx_full) : len;
+    memset(tx_full, 0x00, transfer_len);
+    memcpy(tx_full, pBuffer, len);
+
+    imu->spi_transaction.length = transfer_len * 8U;
+    imu->spi_transaction.rxlength = init_phase ? (transfer_len * 8U) : 0;
+    imu->spi_transaction.tx_buffer = init_phase ? tx_full : pBuffer;
+    imu->spi_transaction.rx_buffer = init_phase ? rx_discard : NULL;
     imu->spi_transaction.flags = 0;
 
-    gpio_set_level(imu->imu_config.io_cs, 0);                         // assert chip select
+    gpio_set_level(imu->imu_config.io_cs, 0);
 
-    // send data packet
-    if(spi_device_polling_transmit(imu->spi_hdl, &imu->spi_transaction) != ESP_OK)
+    if (spi_device_polling_transmit(imu->spi_hdl, &imu->spi_transaction) != ESP_OK)
+    {
+        gpio_set_level(imu->imu_config.io_cs, 1);
         return 0;
+    }
 
-    gpio_set_level(imu->imu_config.io_cs, 1);                         // de-assert chip select
+    gpio_set_level(imu->imu_config.io_cs, 1);
+
+    if (init_phase)
+    {
+        const int packet_len = parse_valid_packet_len(rx_discard, transfer_len);
+        if (packet_len > 0)
+        {
+            memcpy(pending_rx, rx_discard, packet_len);
+            pending_rx_len = packet_len;
+        }
+    }
 
     return len;
 }
@@ -176,7 +235,6 @@ bool BNO08xSH2HAL::spi_wait_for_int()
 {
     if (imu->wait_for_hint() != ESP_OK)
     {
-        hardware_reset();
         return false;
     }
 
@@ -222,10 +280,14 @@ uint16_t BNO08xSH2HAL::spi_read_sh2_packet_header(uint8_t* pBuffer)
  */
 int BNO08xSH2HAL::spi_read_sh2_packet_body(uint8_t* pBuffer, uint16_t packet_sz)
 {
+    if (packet_sz < 4U)
+        return 0;
+
+    const uint16_t body_sz = packet_sz - 4U;
     imu->spi_transaction.rx_buffer = pBuffer + 4;
     imu->spi_transaction.tx_buffer = NULL;
-    imu->spi_transaction.length = packet_sz * 8;
-    imu->spi_transaction.rxlength = packet_sz * 8;
+    imu->spi_transaction.length = body_sz * 8U;
+    imu->spi_transaction.rxlength = body_sz * 8U;
     imu->spi_transaction.flags = 0;
 
     if (spi_device_polling_transmit(imu->spi_hdl, &imu->spi_transaction) != ESP_OK)

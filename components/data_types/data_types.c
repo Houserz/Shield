@@ -29,15 +29,15 @@ typedef struct {
 } sensor_meta_t;
 
 static const sensor_meta_t SENSOR_META[] = {
-    {1, "SW420_Vibration", "VIBRATION", "fast", 1000, 1000, 1, "binary", "identity"},
-    {2, "ACS723_Current", "CURRENT", "medium", 200, 200, 1, "A", "identity"},
-    {3, "MPL3115_Pressure", "PRESSURE", "slow", 50, 50, 1, "Pa", "identity"},
-    {4, "MCP9808_Temp", "TEMPERATURE", "slow", 50, 50, 1, "C", "identity"},
-    {5, "INMP441_Microphone", "MICROPHONE", "fast", 1000, 1000, 1, "rms", "identity"},
-    {6, "751-1015-ND_Photodiode", "PHOTODIODE", "medium", 200, 200, 1, "V", "identity"},
-    {7, "BNO085_Magnetometer", "MAGNETOMETER", "fast", 1000, 100, 3, "uT", "spike_filter"},
-    {8, "BNO085_Gyroscope", "GYROSCOPE", "fast", 1000, 100, 3, "rad/s", "spike_filter"},
-    {9, "BNO085_Accelerometer", "ACCELEROMETER", "fast", 1000, 250, 3, "m/s^2", "spike_filter"},
+    {1, "SW420_Vibration", "VIBRATION", "fast", 1000, 1000, 1, "binary", "passthrough"},
+    {2, "ACS723_Current", "CURRENT", "medium", 200, 200, 1, "A", "gaussian_noise_lowpass_8hz"},
+    {3, "MPL3115_Pressure", "PRESSURE", "slow", 50, 50, 1, "Pa", "gaussian_noise_lowpass_2hz"},
+    {4, "MCP9808_Temp", "TEMPERATURE", "slow", 50, 50, 1, "C", "gaussian_noise_lowpass_2hz"},
+    {5, "INMP441_Microphone", "MICROPHONE", "fast", 1000, 1000, 1, "rms", "gaussian_noise_lowpass_8hz"},
+    {6, "751-1015-ND_Photodiode", "PHOTODIODE", "medium", 200, 200, 1, "V", "gaussian_noise_lowpass_8hz"},
+    {7, "BNO085_Magnetometer", "MAGNETOMETER", "fast", 1000, 100, 3, "uT", "gaussian_noise_lowpass_8hz"},
+    {8, "BNO085_Gyroscope", "GYROSCOPE", "fast", 1000, 100, 3, "rad/s", "gaussian_noise_lowpass_8hz"},
+    {9, "BNO085_Accelerometer", "ACCELEROMETER", "fast", 1000, 250, 3, "m/s^2", "gaussian_noise_lowpass_8hz"},
 };
 
 static char s_meta_run_id[16] = {0};
@@ -127,9 +127,11 @@ static bool metadata_write_full(const char *filepath, const char *run_id,
     fprintf(file, "  \"record_format\": {\n");
     fprintf(file, "    \"version\": 2,\n");
     fprintf(file, "    \"record_size_bytes\": %u,\n", (unsigned)sizeof(sensor_data_record_v2_t));
-    fprintf(file, "    \"raw_definition\": \"physical_units_before_processing\",\n");
-    fprintf(file, "    \"kind\": {\"0\": \"raw\", \"1\": \"processed\"},\n");
-    fprintf(file, "    \"flags\": {\"0x01\": \"processed_same_as_raw\", \"0x02\": \"filter_active\", \"0x04\": \"filter_spike\"}\n");
+    fprintf(file, "    \"clean_definition\": \"physical_units_directly_read_from_sensor\",\n");
+    fprintf(file, "    \"noisy_definition\": \"clean * (1 + gaussian_noise), sigma=0.4, clipped to [-1, 1] before multiplication\",\n");
+    fprintf(file, "    \"denoised_definition\": \"single-pole realtime low-pass applied to noisy data\",\n");
+    fprintf(file, "    \"kind\": {\"0\": \"clean\", \"1\": \"noisy\", \"2\": \"denoised\"},\n");
+    fprintf(file, "    \"flags\": {\"0x01\": \"same_as_clean\", \"0x02\": \"noise_injected\", \"0x04\": \"denoise_active\", \"0x08\": \"filter_spike\"}\n");
     fprintf(file, "  },\n");
     fprintf(file, "  \"data_files\": {\n");
     fprintf(file, "    \"fast\": \"fast_data.bin\",\n");
@@ -142,8 +144,8 @@ static bool metadata_write_full(const char *filepath, const char *run_id,
             stats->fast_samples, stats->medium_samples, stats->slow_samples);
     fprintf(file, "    \"tier_records\": {\"fast\": %"PRIu32", \"medium\": %"PRIu32", \"slow\": %"PRIu32"},\n",
             stats->fast_records, stats->medium_records, stats->slow_records);
-    fprintf(file, "    \"kind_records\": {\"raw\": %"PRIu32", \"processed\": %"PRIu32"},\n",
-            stats->raw_records, stats->processed_records);
+    fprintf(file, "    \"kind_records\": {\"clean\": %"PRIu32", \"noisy\": %"PRIu32", \"denoised\": %"PRIu32"},\n",
+            stats->clean_records, stats->noisy_records, stats->denoised_records);
     fprintf(file, "    \"sensor_samples\": {");
     for (uint8_t id = 1; id <= MAX_SENSOR_ID; id++) {
         fprintf(file, "\"%u\": %"PRIu32"%s", (unsigned)id, stats->sensor_samples[id],

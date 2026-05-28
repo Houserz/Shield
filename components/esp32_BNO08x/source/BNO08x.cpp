@@ -451,10 +451,10 @@ esp_err_t BNO08x::init_config_args()
     bus_config.sclk_io_num = imu_config.io_sclk; // assign sclk gpio pin
     bus_config.quadhd_io_num = -1;               // hold signal gpio (not used)
     bus_config.quadwp_io_num = -1;               // write protect signal gpio (not used)
+    bus_config.max_transfer_sz = SH2_HAL_DMA_SIZE;
 
     // SPI slave device specific config
-    imu_spi_config.mode = 0x3; // set mode to 3 as per BNO08x datasheet (CPHA second edge, CPOL bus
-                               // high when idle)
+    imu_spi_config.mode = 0x0; // board-validated BNO085 SPI mode used by the legacy driver
 
     if (imu_config.sclk_speed > SCLK_MAX_SPEED) // max sclk speed of 3MHz for BNO08x
     {
@@ -471,8 +471,7 @@ esp_err_t BNO08x::init_config_args()
     imu_spi_config.clock_speed_hz = imu_config.sclk_speed; // assign SCLK speed
     imu_spi_config.address_bits = 0;                       // 0 address bits, not using this system
     imu_spi_config.command_bits = 0;                       // 0 command bits, not using this system
-    imu_spi_config.spics_io_num = -1; // due to esp32 silicon issue, chip select cannot be used with full-duplex mode
-                                      // driver, it must be handled via calls to gpio pins
+    imu_spi_config.spics_io_num = -1; // manual CS keeps full-duplex init transactions under one explicit CS window
     imu_spi_config.queue_size = static_cast<int>(CONFIG_ESP32_BNO08X_SPI_QUEUE_SZ); // set max allowable queued SPI transactions
 
     return ESP_OK;
@@ -491,7 +490,7 @@ esp_err_t BNO08x::init_gpio_inputs()
     gpio_config_t inputs_config;
     inputs_config.pin_bit_mask = (1ULL << imu_config.io_int);
     inputs_config.mode = GPIO_MODE_INPUT;
-    inputs_config.pull_up_en = GPIO_PULLUP_DISABLE;
+    inputs_config.pull_up_en = GPIO_PULLUP_ENABLE;
     inputs_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
     inputs_config.intr_type = GPIO_INTR_NEGEDGE;
 
@@ -789,7 +788,26 @@ esp_err_t BNO08x::init_sh2_HAL()
 
     memset(&product_IDs, 0, sizeof(sh2_ProductIds_t));
 
-    if (sh2_getProdIds(&product_IDs) != SH2_OK)
+    for (int i = 0; i < 20; i++)
+    {
+        sh2_service();
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+
+    bool product_ids_ok = false;
+    for (int attempt = 0; attempt < 3; attempt++)
+    {
+        if (sh2_getProdIds(&product_IDs) == SH2_OK)
+        {
+            product_ids_ok = true;
+            break;
+        }
+
+        ESP_LOGW(TAG, "sh2_getProdIds() attempt %d/3 failed; retrying", attempt + 1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    if (!product_ids_ok)
     {
         // clang-format off
         #ifdef CONFIG_ESP32_BNO08x_LOG_STATEMENTS
@@ -991,7 +1009,7 @@ esp_err_t BNO08x::deinit_spi()
  */
 esp_err_t BNO08x::deinit_tasks()
 {
-    static const constexpr uint8_t TASK_DELETE_TIMEOUT_MS = HOST_INT_TIMEOUT_DEFAULT_MS;
+    static const constexpr TickType_t TASK_DELETE_TIMEOUT_MS = HOST_INT_TIMEOUT_DEFAULT_MS;
     uint8_t kill_count = 0;
     uint8_t init_count = 0;
     sh2_SensorEvent_t empty_event;
@@ -1799,10 +1817,15 @@ esp_err_t BNO08x::wait_for_hint()
 {
     EventBits_t spi_evt_bits;
 
+    if (gpio_get_level(imu_config.io_int) == 0)
+        return ESP_OK;
+
     spi_evt_bits = xEventGroupWaitBits(
             sync_ctx.evt_grp_task, EVT_GRP_BNO08x_TASK_HINT_ASSRT_BIT, pdTRUE, pdFALSE, HOST_INT_TIMEOUT_DEFAULT_MS);
 
     if (spi_evt_bits & EVT_GRP_BNO08x_TASK_HINT_ASSRT_BIT)
+        return ESP_OK;
+    else if (gpio_get_level(imu_config.io_int) == 0)
         return ESP_OK;
     else
         return ESP_ERR_TIMEOUT;
