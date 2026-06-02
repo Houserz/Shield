@@ -81,7 +81,7 @@ assert FRAME_SIZE == 20
 # (sensor_id, name, axis_names, unit, group_name, axis_color_rgb)
 SENSORS = {
     1: ("vibration",   ["v"],            "binary", "Other",  [(255, 90, 90)]),
-    2: ("current",     ["I"],            "A",      "Other",  [(255, 165, 0)]),
+    2: ("current",     ["I"],            "A",      "Other",  [(140, 70, 220)]),
     3: ("pressure",    ["P"],            "Pa",     "Other",  [(120, 220, 120)]),
     4: ("temperature", ["T"],            "C",      "Other",  [(220, 220, 60)]),
     5: ("microphone",  ["mic"],          "rms",    "Other",  [(180, 120, 220)]),
@@ -96,7 +96,7 @@ SENSORS = {
 
 LIVE_WINDOW_SEC  = 30.0
 HISTORY_BIN_SEC  = 1.0
-PLOT_UPDATE_HZ   = 15
+PLOT_UPDATE_HZ   = 8
 HISTORY_MAX_BINS = 60_000
 LIVE_RING_MAX    = 200_000
 RECONNECT_DELAY_SEC = 1.0
@@ -600,7 +600,7 @@ class Viewer(QtWidgets.QMainWindow):
         self.btn_live.clicked.connect(lambda: self._set_view("live"))
         controls.addWidget(self.btn_full)
         controls.addWidget(self.btn_live)
-        self.chk_clean = QtWidgets.QCheckBox("clean")
+        self.chk_clean = QtWidgets.QCheckBox("raw")
         self.chk_noisy = QtWidgets.QCheckBox("noisy")
         self.chk_denoised = QtWidgets.QCheckBox("denoised")
         self.chk_band = QtWidgets.QCheckBox("stats band")

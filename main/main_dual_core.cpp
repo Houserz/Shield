@@ -72,7 +72,6 @@ static bno08x_config_t bno085_spi_cfg = []() {
     cfg.io_int  = GPIO_NUM_5;
     cfg.io_rst  = GPIO_NUM_6;
     cfg.spi_peripheral = SPI3_HOST;
-    cfg.sclk_speed = 1000000UL; // Conservative speed for reliable BNO085 boot/product-ID reads.
     return cfg;
 }();
 
@@ -104,7 +103,7 @@ static hal_i2c_config_t mcp9808_i2c_cfg = {
 
 // INMP441 - I2S Configuration (high sample rate)
 // BCK/WS/SD use GPIO45/47/48 to avoid conflict with other peripherals
-#define ENABLE_INMP441_MICROPHONE 0
+#define ENABLE_INMP441_MICROPHONE 1
 static inmp441_i2s_config_t inmp441_i2s_cfg = {
     .i2s_port = 0,         // I2S_NUM_0
     .bck_pin = 45,          // GPIO45 (bit clock)
@@ -239,21 +238,6 @@ static void copy_sensor_data(float *dst, const float *src, uint8_t axis_count) {
 
 static bool sensor_has_noise(const SensorContext_t *sensor) {
     return sensor && sensor->type != SENSOR_TYPE_VIBRATION;
-}
-
-static bool sensor_is_bno085(const SensorContext_t *sensor) {
-    if (!sensor) return false;
-    return sensor->type == SENSOR_TYPE_MAGNETOMETER ||
-           sensor->type == SENSOR_TYPE_GYROSCOPE ||
-           sensor->type == SENSOR_TYPE_ACCELEROMETER;
-}
-
-static void set_bno085_sensors_enabled(bool enabled) {
-    for (int i = 0; i < NUM_SENSORS; i++) {
-        if (sensor_is_bno085(&my_sensors[i])) {
-            my_sensors[i].enabled = enabled;
-        }
-    }
 }
 
 static float sensor_denoise_cutoff_hz(const SensorContext_t *sensor) {
@@ -668,17 +652,10 @@ extern "C" void app_main(void) {
 
 
     if (!bno085_imu.initialize()) {
-        ESP_LOGE(TAG,
-                 "BNO085 pins: SPI%d MOSI=%d MISO=%d SCLK=%d CS=%d INT=%d RST=%d",
-                 bno085_spi_cfg.spi_peripheral, bno085_spi_cfg.io_mosi,
-                 bno085_spi_cfg.io_miso, bno085_spi_cfg.io_sclk,
-                 bno085_spi_cfg.io_cs, bno085_spi_cfg.io_int,
-                 bno085_spi_cfg.io_rst);
-        ESP_LOGW(TAG, "BNO085 initialize() FAILED - continuing without IMU sensors");
-        set_bno085_sensors_enabled(false);
-    } else {
-        ESP_LOGI(TAG, "BNO085 initialized OK");
+        ESP_LOGE(TAG, "BNO085 initialize() FAILED - aborting");
+        return;
     }
+    ESP_LOGI(TAG, "BNO085 initialized OK");
 
     // Initialize all sensors
     const char *sensor_names[] = {"SW-420 Vibration", "ACS723 Current", "MPL3115 Pressure", "MCP9808 Temp",

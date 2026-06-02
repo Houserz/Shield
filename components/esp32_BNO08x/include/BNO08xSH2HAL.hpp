@@ -83,8 +83,6 @@ class BNO08xSH2HAL
 
     private:
         static BNO08x* imu;
-        static uint8_t pending_rx[SH2_HAL_DMA_SIZE];
-        static int pending_rx_len;
         static void hardware_reset();
         static bool spi_wait_for_int();
         static uint16_t spi_read_sh2_packet_header(uint8_t* pBuffer);
