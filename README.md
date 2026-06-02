@@ -314,3 +314,10 @@ Hold the device still for the first **5 seconds** after boot for self-calibratio
 Per-second debug lines appear under tag `spike` (e.g. `accel-x: bias=… sigma_ref=… spikes_total=…`).
 To disable, set `#define ENABLE_SPIKE_FILTER 0` in `components/spike_filter/include/spike_filter.h` and rebuild.
 The optional Hampel-window backstop is gated by `SPIKE_FILTER_ENABLE_HAMPEL` (off by default).
+
+
+# USB
+conda run -n miniproject1 python tools/pc_viewer.py
+
+# WIFI
+conda run -n miniproject1 python tools/pc_viewer.py --tcp 192.168.4.1:3333 --plot-hz 5 --max-live-points 1200

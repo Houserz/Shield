@@ -100,6 +100,9 @@ PLOT_UPDATE_HZ   = 8
 HISTORY_MAX_BINS = 60_000
 LIVE_RING_MAX    = 200_000
 RECONNECT_DELAY_SEC = 1.0
+MAX_LIVE_PLOT_POINTS = 2400
+MAX_HISTORY_PLOT_POINTS = 6000
+REFRESH_DEBOUNCE_MS = 25
 
 
 # ====================================================================
@@ -298,6 +301,7 @@ class Reader(threading.Thread):
         self.last_seq: Optional[int] = None
         self.t0_wall = time.time()
         self.t0_ms: Optional[int] = None
+        self.latest_t_sec = 0.0
         self.state_lock = threading.Lock()
         self.src_label = target_name(args)
         self.connection_status = "waiting for device"
@@ -310,6 +314,9 @@ class Reader(threading.Thread):
     def connection_snapshot(self) -> tuple[str, str]:
         with self.state_lock:
             return self.src_label, self.connection_status
+
+    def latest_time_sec(self) -> float:
+        return self.latest_t_sec
 
     def _connect_once(self) -> bool:
         label = target_name(self.args)
@@ -365,6 +372,7 @@ class Reader(threading.Thread):
             if self.t0_ms is None or ts_ms < self.t0_ms:
                 self.t0_ms = ts_ms
             t_sec = (ts_ms - self.t0_ms) / 1000.0
+            self.latest_t_sec = t_sec
 
             ch = self.channels.get((sid, axis, kind))
             if ch is not None:
@@ -434,13 +442,121 @@ class SensorPanel:
         self.mean_curve = plot.plot(pen=pg.mkPen(QtGui.QColor(0, 0, 0), width=1.5))
 
     @staticmethod
-    def _visible_values(t: np.ndarray, v: np.ndarray, x_lo: float, x_hi: float) -> np.ndarray:
+    def _finite_xy(t: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if t.size == 0 or v.size == 0:
-            return np.empty(0)
+            empty = np.empty(0, dtype=np.float64)
+            return empty, empty
         n = min(t.size, v.size)
         tt = t[:n]
         vv = v[:n]
-        mask = np.isfinite(tt) & np.isfinite(vv) & (tt >= x_lo) & (tt <= x_hi)
+        mask = np.isfinite(tt) & np.isfinite(vv)
+        if mask.all():
+            return tt, vv
+        return tt[mask], vv[mask]
+
+    @classmethod
+    def _downsample_xy(cls, t: np.ndarray, v: np.ndarray, max_points: int) -> tuple[np.ndarray, np.ndarray]:
+        t, v = cls._finite_xy(t, v)
+        n = t.size
+        if max_points <= 0 or n <= max_points:
+            return t, v
+        if max_points < 4:
+            idx = np.linspace(0, n - 1, max(1, max_points), dtype=np.int64)
+            return t[idx], v[idx]
+
+        bucket_count = max(1, (max_points - 4) // 2)
+        bucket_size = max(1, int(math.ceil(n / bucket_count)))
+        bucket_count = n // bucket_size
+        if bucket_count <= 0:
+            return t, v
+
+        trim = bucket_count * bucket_size
+        vv = v[:trim].reshape(bucket_count, bucket_size)
+        base = np.arange(bucket_count, dtype=np.int64) * bucket_size
+        min_idx = base + np.argmin(vv, axis=1)
+        max_idx = base + np.argmax(vv, axis=1)
+        pairs = np.column_stack((min_idx, max_idx))
+        pairs.sort(axis=1)
+
+        idx_parts = [np.array([0], dtype=np.int64), pairs.ravel()]
+        if trim < n:
+            tail = v[trim:]
+            idx_parts.append(np.array([
+                trim + int(np.argmin(tail)),
+                trim + int(np.argmax(tail)),
+            ], dtype=np.int64))
+        idx_parts.append(np.array([n - 1], dtype=np.int64))
+
+        indices = np.unique(np.concatenate(idx_parts))
+        if indices.size > max_points:
+            keep = np.linspace(0, indices.size - 1, max_points, dtype=np.int64)
+            indices = indices[keep]
+        return t[indices], v[indices]
+
+    @staticmethod
+    def _downsample_band(t: np.ndarray,
+                         lo: np.ndarray,
+                         hi: np.ndarray,
+                         max_points: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if t.size == 0 or lo.size == 0 or hi.size == 0:
+            empty = np.empty(0, dtype=np.float64)
+            return empty, empty, empty
+
+        n = min(t.size, lo.size, hi.size)
+        tt = t[:n]
+        yy_lo = lo[:n]
+        yy_hi = hi[:n]
+        mask = np.isfinite(tt) & np.isfinite(yy_lo) & np.isfinite(yy_hi)
+        if not mask.all():
+            tt = tt[mask]
+            yy_lo = yy_lo[mask]
+            yy_hi = yy_hi[mask]
+            n = tt.size
+        if max_points <= 0 or n <= max_points:
+            return tt, yy_lo, yy_hi
+        if max_points < 2:
+            idx = np.array([0], dtype=np.int64)
+            return tt[idx], yy_lo[idx], yy_hi[idx]
+
+        bucket_target = max(1, max_points - 1)
+        bucket_size = max(1, int(math.ceil(n / bucket_target)))
+        bucket_count = n // bucket_size
+        if bucket_count <= 0:
+            return tt, yy_lo, yy_hi
+
+        trim = bucket_count * bucket_size
+        t_mat = tt[:trim].reshape(bucket_count, bucket_size)
+        lo_mat = yy_lo[:trim].reshape(bucket_count, bucket_size)
+        hi_mat = yy_hi[:trim].reshape(bucket_count, bucket_size)
+
+        out_t = [np.mean(t_mat, axis=1)]
+        out_lo = [np.min(lo_mat, axis=1)]
+        out_hi = [np.max(hi_mat, axis=1)]
+        if trim < n:
+            out_t.append(np.array([float(np.mean(tt[trim:]))], dtype=np.float64))
+            out_lo.append(np.array([float(np.min(yy_lo[trim:]))], dtype=np.float64))
+            out_hi.append(np.array([float(np.max(yy_hi[trim:]))], dtype=np.float64))
+
+        return np.concatenate(out_t), np.concatenate(out_lo), np.concatenate(out_hi)
+
+    @staticmethod
+    def _set_curve_data(curve, visible: bool, t: np.ndarray, v: np.ndarray):
+        curve.setVisible(visible)
+        if visible:
+            curve.setData(t, v)
+
+    @staticmethod
+    def _set_band_visible(band_lo, band_hi, band_fill, visible: bool):
+        band_lo.setVisible(visible)
+        band_hi.setVisible(visible)
+        band_fill.setVisible(visible)
+
+    @staticmethod
+    def _visible_values(t: np.ndarray, v: np.ndarray, x_lo: float, x_hi: float) -> np.ndarray:
+        tt, vv = SensorPanel._finite_xy(t, v)
+        if tt.size == 0:
+            return np.empty(0, dtype=np.float64)
+        mask = (tt >= x_lo) & (tt <= x_hi)
         return vv[mask]
 
     def _set_robust_y_range(self, series: list[tuple[np.ndarray, np.ndarray]], x_lo: float, x_hi: float):
@@ -485,13 +601,19 @@ class SensorPanel:
                denoised_hist_min: np.ndarray, denoised_hist_max: np.ndarray, denoised_hist_std: np.ndarray,
                x_lo: float, x_hi: float, view_mode: str,
                stats: tuple[float, float, float], rate_hz: float,
-               show_clean: bool, show_noisy: bool, show_denoised: bool, show_band: bool):
+               show_clean: bool, show_noisy: bool, show_denoised: bool, show_band: bool,
+               max_live_points: int, max_history_points: int):
 
         if view_mode == "live":
-            self.clean_curve.setData(clean_live_t, clean_live_v) if show_clean else self.clean_curve.setData([], [])
-            self.noisy_curve.setData(noisy_live_t, noisy_live_v) if show_noisy else self.noisy_curve.setData([], [])
-            self.denoised_curve.setData(denoised_live_t, denoised_live_v) if show_denoised else self.denoised_curve.setData([], [])
-            self.mean_curve.setData(denoised_hist_t, denoised_hist_mean)
+            clean_live_t, clean_live_v = self._downsample_xy(clean_live_t, clean_live_v, max_live_points)
+            noisy_live_t, noisy_live_v = self._downsample_xy(noisy_live_t, noisy_live_v, max_live_points)
+            denoised_live_t, denoised_live_v = self._downsample_xy(denoised_live_t, denoised_live_v, max_live_points)
+            mean_t, mean_v = self._downsample_xy(denoised_hist_t, denoised_hist_mean, max_history_points)
+
+            self._set_curve_data(self.clean_curve, show_clean, clean_live_t, clean_live_v)
+            self._set_curve_data(self.noisy_curve, show_noisy, noisy_live_t, noisy_live_v)
+            self._set_curve_data(self.denoised_curve, show_denoised, denoised_live_t, denoised_live_v)
+            self.mean_curve.setData(mean_t, mean_v)
             y_series = []
             if show_clean:
                 y_series.append((clean_live_t, clean_live_v))
@@ -499,20 +621,32 @@ class SensorPanel:
                 y_series.append((noisy_live_t, noisy_live_v))
             if show_denoised:
                 y_series.append((denoised_live_t, denoised_live_v))
-            y_series.append((denoised_hist_t, denoised_hist_mean))
+            y_series.append((mean_t, mean_v))
             if show_band:
-                band_lo = denoised_hist_mean - denoised_hist_std
-                band_hi = denoised_hist_mean + denoised_hist_std
-                self.band_lo.setData(denoised_hist_t, band_lo)
-                self.band_hi.setData(denoised_hist_t, band_hi)
-                y_series.extend([(denoised_hist_t, band_lo), (denoised_hist_t, band_hi)])
+                n = min(denoised_hist_t.size, denoised_hist_mean.size, denoised_hist_std.size)
+                band_t, band_lo, band_hi = self._downsample_band(
+                    denoised_hist_t[:n],
+                    denoised_hist_mean[:n] - denoised_hist_std[:n],
+                    denoised_hist_mean[:n] + denoised_hist_std[:n],
+                    max_history_points,
+                )
+                self._set_band_visible(self.band_lo, self.band_hi, self.band_fill, True)
+                self.band_lo.setData(band_t, band_lo)
+                self.band_hi.setData(band_t, band_hi)
+                y_series.extend([(band_t, band_lo), (band_t, band_hi)])
             else:
-                self.band_lo.setData([], [])
-                self.band_hi.setData([], [])
+                self._set_band_visible(self.band_lo, self.band_hi, self.band_fill, False)
         else:
-            self.clean_curve.setData(clean_hist_t, clean_hist_mean) if show_clean else self.clean_curve.setData([], [])
-            self.noisy_curve.setData(noisy_hist_t, noisy_hist_mean) if show_noisy else self.noisy_curve.setData([], [])
-            self.denoised_curve.setData(denoised_hist_t, denoised_hist_mean) if show_denoised else self.denoised_curve.setData([], [])
+            denoised_band_t = denoised_hist_t
+            clean_hist_t, clean_hist_mean = self._downsample_xy(clean_hist_t, clean_hist_mean, max_history_points)
+            noisy_hist_t, noisy_hist_mean = self._downsample_xy(noisy_hist_t, noisy_hist_mean, max_history_points)
+            denoised_hist_t, denoised_hist_mean = self._downsample_xy(
+                denoised_hist_t, denoised_hist_mean, max_history_points
+            )
+
+            self._set_curve_data(self.clean_curve, show_clean, clean_hist_t, clean_hist_mean)
+            self._set_curve_data(self.noisy_curve, show_noisy, noisy_hist_t, noisy_hist_mean)
+            self._set_curve_data(self.denoised_curve, show_denoised, denoised_hist_t, denoised_hist_mean)
             self.mean_curve.setData(denoised_hist_t, denoised_hist_mean)
             y_series = []
             if show_clean:
@@ -523,12 +657,15 @@ class SensorPanel:
                 y_series.append((denoised_hist_t, denoised_hist_mean))
             y_series.append((denoised_hist_t, denoised_hist_mean))
             if show_band:
-                self.band_lo.setData(denoised_hist_t, denoised_hist_min)
-                self.band_hi.setData(denoised_hist_t, denoised_hist_max)
-                y_series.extend([(denoised_hist_t, denoised_hist_min), (denoised_hist_t, denoised_hist_max)])
+                band_t, band_lo, band_hi = self._downsample_band(
+                    denoised_band_t, denoised_hist_min, denoised_hist_max, max_history_points
+                )
+                self._set_band_visible(self.band_lo, self.band_hi, self.band_fill, True)
+                self.band_lo.setData(band_t, band_lo)
+                self.band_hi.setData(band_t, band_hi)
+                y_series.extend([(band_t, band_lo), (band_t, band_hi)])
             else:
-                self.band_lo.setData([], [])
-                self.band_hi.setData([], [])
+                self._set_band_visible(self.band_lo, self.band_hi, self.band_fill, False)
 
         self.plot.setXRange(x_lo, x_hi, padding=0.0)
         self._set_robust_y_range(y_series, x_lo, x_hi)
@@ -550,11 +687,14 @@ def channels_for_sensor(sid: int):
 
 
 class Viewer(QtWidgets.QMainWindow):
-    def __init__(self, channels: dict, reader: Reader):
+    def __init__(self, channels: dict, reader: Reader, args: argparse.Namespace):
         super().__init__()
         pg.setConfigOptions(antialias=False, useOpenGL=False, background="w", foreground="k")
         self.channels = channels
         self.reader = reader
+        self.plot_hz = max(1.0, float(args.plot_hz))
+        self.max_live_points = max(8, int(args.max_live_points))
+        self.max_history_points = max(8, int(args.max_history_points))
         self.setWindowTitle("Project SHIELD - Live Viewer")
         self.resize(1400, 900)
 
@@ -577,14 +717,16 @@ class Viewer(QtWidgets.QMainWindow):
             groups.setdefault(group, []).append(sid)
         # Order: Accel, Gyro, Mag, Other
         order = ["Accel", "Gyro", "Mag", "Other"]
+        self._tab_panel_keys: list[list[tuple[int, int]]] = []
         for g in order:
             if g not in groups:
                 continue
             sids = groups[g]
             gl = pg.GraphicsLayoutWidget()
             gl.setBackground("w")
-            self._fill_group_tab(gl, sids)
+            panel_keys = self._fill_group_tab(gl, sids)
             self.tabs.addTab(gl, g)
+            self._tab_panel_keys.append(panel_keys)
 
         self.panels: dict[tuple[int, int], SensorPanel] = self._panels_index
 
@@ -616,18 +758,30 @@ class Viewer(QtWidgets.QMainWindow):
 
         self._view_mode = "live"
 
+        self._refresh_debounce_timer = QtCore.QTimer(self)
+        self._refresh_debounce_timer.setSingleShot(True)
+        self._refresh_debounce_timer.timeout.connect(self.refresh)
+        self.tabs.currentChanged.connect(lambda _idx: self.request_refresh())
+        for chk in (self.chk_clean, self.chk_noisy, self.chk_denoised, self.chk_band):
+            chk.stateChanged.connect(lambda _state: self.request_refresh())
+
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.refresh)
-        self.timer.start(int(1000 / PLOT_UPDATE_HZ))
+        self.timer.start(max(16, int(1000 / self.plot_hz)))
 
     def _set_view(self, mode: str):
         self._view_mode = mode
         self.btn_full.setChecked(mode == "full")
         self.btn_live.setChecked(mode == "live")
+        self.request_refresh()
 
-    def _fill_group_tab(self, gl: pg.GraphicsLayoutWidget, sids: list[int]):
+    def request_refresh(self):
+        self._refresh_debounce_timer.start(REFRESH_DEBOUNCE_MS)
+
+    def _fill_group_tab(self, gl: pg.GraphicsLayoutWidget, sids: list[int]) -> list[tuple[int, int]]:
         if not hasattr(self, "_panels_index"):
             self._panels_index = {}
+        panel_keys: list[tuple[int, int]] = []
 
         # If group has a single 3-axis sensor (e.g. Accel), do 3 rows.
         # If group has multiple scalar sensors (Other), do a 2-col grid.
@@ -637,12 +791,16 @@ class Viewer(QtWidgets.QMainWindow):
             if len(axes) == 1:
                 p = gl.addPlot(row=0, col=0)
                 panel = SensorPanel(p, f"{name}.{axes[0]}", unit, colors[0])
-                self._panels_index[(sid, 0)] = panel
+                key = (sid, 0)
+                self._panels_index[key] = panel
+                panel_keys.append(key)
             else:
                 for i, ax in enumerate(axes):
                     p = gl.addPlot(row=i, col=0)
                     panel = SensorPanel(p, f"{name}.{ax}", unit, colors[i])
-                    self._panels_index[(sid, i + 1)] = panel
+                    key = (sid, i + 1)
+                    self._panels_index[key] = panel
+                    panel_keys.append(key)
         else:
             # Other tab: lay scalars in a 2-column grid
             for idx, sid in enumerate(sids):
@@ -651,32 +809,101 @@ class Viewer(QtWidgets.QMainWindow):
                 p = gl.addPlot(row=r, col=c)
                 if len(axes) == 1:
                     panel = SensorPanel(p, f"{name}.{axes[0]}", unit, colors[0])
-                    self._panels_index[(sid, 0)] = panel
+                    key = (sid, 0)
+                    self._panels_index[key] = panel
+                    panel_keys.append(key)
                 else:
                     # unlikely, but support
                     for i, ax in enumerate(axes):
                         p2 = gl.addPlot(row=r * 3 + i, col=c)
                         panel = SensorPanel(p2, f"{name}.{ax}", unit, colors[i])
-                        self._panels_index[(sid, i + 1)] = panel
+                        key = (sid, i + 1)
+                        self._panels_index[key] = panel
+                        panel_keys.append(key)
+        return panel_keys
 
-    def refresh(self):
-        # Snapshot every channel under its lock, then compute once.
-        snapshots: dict[tuple[int, int, int], dict] = {}
-        latest_t = 0.0
-        for key, ch in self.channels.items():
-            with ch.lock:
+    def _visible_panel_keys(self) -> list[tuple[int, int]]:
+        idx = self.tabs.currentIndex()
+        if 0 <= idx < len(self._tab_panel_keys):
+            return self._tab_panel_keys[idx]
+        return list(self.panels.keys())
+
+    @staticmethod
+    def _empty_snapshot() -> dict:
+        empty = np.empty(0, dtype=np.float64)
+        return dict(
+            lt=empty, lv=empty, ht=empty,
+            hmean=empty, hmin=empty, hmax=empty, hstd=empty,
+            stats=(0.0, 0.0, 0.0), rate_hz=0.0,
+        )
+
+    @staticmethod
+    def _filter_arrays(t: np.ndarray,
+                       arrays: list[np.ndarray],
+                       x_lo: Optional[float],
+                       x_hi: Optional[float]) -> tuple[np.ndarray, ...]:
+        sizes = [t.size] + [arr.size for arr in arrays]
+        n = min(sizes) if sizes else 0
+        if n == 0:
+            empty = np.empty(0, dtype=np.float64)
+            return (empty, *[empty for _ in arrays])
+
+        tt = t[:n]
+        clipped = [arr[:n] for arr in arrays]
+        mask = np.isfinite(tt)
+        for arr in clipped:
+            mask &= np.isfinite(arr)
+        if x_lo is not None:
+            mask &= tt >= x_lo
+        if x_hi is not None:
+            mask &= tt <= x_hi
+
+        if mask.all():
+            return (tt, *clipped)
+        return (tt[mask], *[arr[mask] for arr in clipped])
+
+    def _snapshot_channel(self, ch: ChannelBuf, x_lo: float, x_hi: float) -> dict:
+        empty = np.empty(0, dtype=np.float64)
+        with ch.lock:
+            if self._view_mode == "live":
                 lt = np.asarray(ch.live_t, dtype=np.float64)
                 lv = np.asarray(ch.live_v, dtype=np.float64)
-                ht = np.asarray(ch.hist_t, dtype=np.float64)
-                hmean = np.asarray(ch.hist_mean, dtype=np.float64)
-                hmin  = np.asarray(ch.hist_min, dtype=np.float64)
-                hmax  = np.asarray(ch.hist_max, dtype=np.float64)
-                hstd  = np.asarray(ch.hist_std, dtype=np.float64)
-            snapshots[key] = dict(lt=lt, lv=lv, ht=ht, hmean=hmean,
-                                  hmin=hmin, hmax=hmax, hstd=hstd)
-            if lt.size:
-                latest_t = max(latest_t, float(lt[-1]))
+            else:
+                lt = empty
+                lv = empty
+            ht = np.asarray(ch.hist_t, dtype=np.float64)
+            hmean = np.asarray(ch.hist_mean, dtype=np.float64)
+            hmin = np.asarray(ch.hist_min, dtype=np.float64)
+            hmax = np.asarray(ch.hist_max, dtype=np.float64)
+            hstd = np.asarray(ch.hist_std, dtype=np.float64)
 
+            if ch.n_total == 0:
+                stats = (0.0, 0.0, 0.0)
+            else:
+                mean = ch.mean_total
+                var = max(0.0, ch.m2_total / ch.n_total)
+                std = math.sqrt(var)
+                stats = (mean, std, math.sqrt(mean * mean + var))
+
+            n_live = len(ch.live_t)
+            if n_live >= 2:
+                dt = ch.live_t[-1] - ch.live_t[0]
+                rate_hz = (n_live - 1) / dt if dt > 0.0 else 0.0
+            else:
+                rate_hz = 0.0
+
+        if self._view_mode == "live":
+            lt, lv = self._filter_arrays(lt, [lv], x_lo, x_hi)
+            ht, hmean, hmin, hmax, hstd = self._filter_arrays(ht, [hmean, hmin, hmax, hstd], x_lo, x_hi)
+        else:
+            ht, hmean, hmin, hmax, hstd = self._filter_arrays(ht, [hmean, hmin, hmax, hstd], None, None)
+
+        return dict(lt=lt, lv=lv, ht=ht, hmean=hmean,
+                    hmin=hmin, hmax=hmax, hstd=hstd,
+                    stats=stats, rate_hz=rate_hz)
+
+    def refresh(self):
+        latest_t = self.reader.latest_time_sec()
         if self._view_mode == "live":
             x_lo = max(0.0, latest_t - LIVE_WINDOW_SEC)
             x_hi = max(LIVE_WINDOW_SEC, latest_t)
@@ -684,12 +911,27 @@ class Viewer(QtWidgets.QMainWindow):
             x_lo = 0.0
             x_hi = latest_t if latest_t > 0 else 1.0
 
-        empty = dict(
-            lt=np.empty(0), lv=np.empty(0), ht=np.empty(0),
-            hmean=np.empty(0), hmin=np.empty(0), hmax=np.empty(0), hstd=np.empty(0),
-        )
+        visible_panel_keys = self._visible_panel_keys()
+        channel_keys: set[tuple[int, int, int]] = set()
+        for sid, axis in visible_panel_keys:
+            channel_keys.add((sid, axis, DATA_KIND_CLEAN))
+            channel_keys.add((sid, axis, DATA_KIND_NOISY))
+            channel_keys.add((sid, axis, DATA_KIND_DENOISED))
 
-        for key, panel in self.panels.items():
+        snapshots: dict[tuple[int, int, int], dict] = {}
+        for key in channel_keys:
+            ch = self.channels.get(key)
+            if ch is not None:
+                snapshots[key] = self._snapshot_channel(ch, x_lo, x_hi)
+
+        empty = self._empty_snapshot()
+        show_clean = self.chk_clean.isChecked()
+        show_noisy = self.chk_noisy.isChecked()
+        show_denoised = self.chk_denoised.isChecked()
+        show_band = self.chk_band.isChecked()
+
+        for key in visible_panel_keys:
+            panel = self.panels[key]
             sid, axis = key
             clean_key = (sid, axis, DATA_KIND_CLEAN)
             noisy_key = (sid, axis, DATA_KIND_NOISY)
@@ -697,18 +939,13 @@ class Viewer(QtWidgets.QMainWindow):
             clean_s = snapshots.get(clean_key, empty)
             noisy_s = snapshots.get(noisy_key, empty)
             denoised_s = snapshots.get(denoised_key, empty)
-            denoised_ch = self.channels.get(denoised_key)
-            stats = denoised_ch.stats_alltime() if denoised_ch is not None else (0.0, 0.0, 0.0)
-            rate_hz = denoised_ch.rate_recent_hz() if denoised_ch is not None else 0.0
             panel.update(clean_s["lt"], clean_s["lv"], clean_s["ht"], clean_s["hmean"],
                          noisy_s["lt"], noisy_s["lv"], noisy_s["ht"], noisy_s["hmean"],
                          denoised_s["lt"], denoised_s["lv"], denoised_s["ht"], denoised_s["hmean"],
                          denoised_s["hmin"], denoised_s["hmax"], denoised_s["hstd"],
-                         x_lo, x_hi, self._view_mode, stats, rate_hz,
-                         self.chk_clean.isChecked(),
-                         self.chk_noisy.isChecked(),
-                         self.chk_denoised.isChecked(),
-                         self.chk_band.isChecked())
+                         x_lo, x_hi, self._view_mode, denoised_s["stats"], denoised_s["rate_hz"],
+                         show_clean, show_noisy, show_denoised, show_band,
+                         self.max_live_points, self.max_history_points)
 
         # status line
         elapsed = time.time() - self.reader.t0_wall
@@ -731,7 +968,19 @@ def main():
                     help="Serial baudrate (USB CDC ignores this)")
     ap.add_argument("--tcp", help="TCP host[:port] (default port 3333)")
     ap.add_argument("--out", default=None, help="Output dir (default: ./pc_runs/RUN_<ts>/)")
+    ap.add_argument("--plot-hz", type=float, default=PLOT_UPDATE_HZ,
+                    help=f"Plot refresh rate in Hz (default: {PLOT_UPDATE_HZ})")
+    ap.add_argument("--max-live-points", type=int, default=MAX_LIVE_PLOT_POINTS,
+                    help=f"Max rendered points per live curve (default: {MAX_LIVE_PLOT_POINTS})")
+    ap.add_argument("--max-history-points", type=int, default=MAX_HISTORY_PLOT_POINTS,
+                    help=f"Max rendered points per full-history curve (default: {MAX_HISTORY_PLOT_POINTS})")
     args = ap.parse_args()
+    if args.plot_hz <= 0:
+        ap.error("--plot-hz must be > 0")
+    if args.max_live_points <= 0:
+        ap.error("--max-live-points must be > 0")
+    if args.max_history_points <= 0:
+        ap.error("--max-history-points must be > 0")
 
     out_root = Path(args.out) if args.out else (Path.cwd() / "pc_runs")
     out_root.mkdir(parents=True, exist_ok=True)
@@ -756,7 +1005,7 @@ def main():
     reader.start()
 
     app = QtWidgets.QApplication(sys.argv)
-    win = Viewer(channels, reader)
+    win = Viewer(channels, reader, args)
     win.show()
     try:
         rc = app.exec()
