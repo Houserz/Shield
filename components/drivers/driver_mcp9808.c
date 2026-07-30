@@ -250,7 +250,7 @@ bool mcp9808_read_sample(SensorContext_t* ctx, float* data_out) {
 
   *data_out = (float)temp_raw * MCP9808_TEMP_LSB_C;
   if (noise_injection_is_enabled()) {
-    *data_out += *data_out * rand_gaussian();
+    *data_out += *data_out * rand_gaussian_tracked((uint8_t)ctx->id);
   }
   return true;
 }

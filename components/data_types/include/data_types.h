@@ -168,4 +168,34 @@ bool metadata_update_statistics(const char *filepath, const daq_statistics_t *st
  */
 bool metadata_finalize(const char *filepath);
 
+// ==================== Noise Dataset Record ====================
+
+/**
+ * @brief Noise record — logged in parallel with sensor data during injection.
+ *
+ * For 3-axis sensors (accel/gyro/mag) the three noise multipliers that were
+ * applied are stored in noise[0..2].  For scalar sensors only noise[0] is used
+ * and noise[1..2] are 0.
+ *
+ * File: noise_data.bin
+ * Written only while noise injection is active.
+ * Size: 16 bytes/record  (same layout as fast_data_record_t for easy parsing)
+ */
+typedef struct __attribute__((packed)) {
+    uint32_t timestamp_ms;    // Timestamp matching the contaminated sample
+    uint8_t  sensor_id;       // Sensor ID (matches sensor data record)
+    uint8_t  reserved[3];     // Padding
+    float    noise[3];        // Noise multipliers applied: clean * (1 + noise[i])
+} noise_data_record_t;
+
+/**
+ * @brief Noise queue message
+ */
+typedef struct {
+    queue_msg_type_t    type;
+    noise_data_record_t data;
+} noise_queue_msg_t;
+
+#define NOISE_QUEUE_SIZE   350   // Matches fast queue — worst case all 9 sensors 1kHz
+
 #endif // DATA_TYPES_H

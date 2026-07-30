@@ -457,7 +457,7 @@ bool bno085_read_sample(SensorContext_t* ctx, float* data_out) {
   if (n < SHTP_HEADER_LEN) {
     *data_out = s_bno085.last_accel_magnitude;
     if (noise_injection_is_enabled()) {
-      *data_out += *data_out * rand_gaussian();
+      *data_out += *data_out * rand_gaussian_tracked((uint8_t)ctx->id);
     }
     return true;  // No new packet, non-fatal
   }
@@ -469,7 +469,7 @@ bool bno085_read_sample(SensorContext_t* ctx, float* data_out) {
   if (channel != SHTP_CHANNEL_REPORTS || payload_len < 10) {
     *data_out = s_bno085.last_accel_magnitude;
     if (noise_injection_is_enabled()) {
-      *data_out += *data_out * rand_gaussian();
+      *data_out += *data_out * rand_gaussian_tracked((uint8_t)ctx->id);
     }
     return true;
   }
@@ -486,7 +486,7 @@ bool bno085_read_sample(SensorContext_t* ctx, float* data_out) {
         s_bno085.last_accel_magnitude = mag;
         *data_out = mag;
         if (noise_injection_is_enabled()) {
-          *data_out += *data_out * rand_gaussian();
+          *data_out += *data_out * rand_gaussian_tracked((uint8_t)ctx->id);
         }
         return true;
       }
@@ -496,7 +496,7 @@ bool bno085_read_sample(SensorContext_t* ctx, float* data_out) {
 
   *data_out = s_bno085.last_accel_magnitude;
   if (noise_injection_is_enabled()) {
-    *data_out += *data_out * rand_gaussian();
+    *data_out += *data_out * rand_gaussian_tracked((uint8_t)ctx->id);
   }
   return true;
 }

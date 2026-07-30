@@ -32,7 +32,7 @@ bool photodiode_read_sample(SensorContext_t* ctx, float* data_out) {
   if (!ads1115_read_voltage(&s_ads1115_cfg, ADS1115_CH0, data_out))
     return false;
   if (noise_injection_is_enabled()) {
-    *data_out += *data_out * rand_gaussian();
+    *data_out += *data_out * rand_gaussian_tracked((uint8_t)ctx->id);
   }
   return true;
 }

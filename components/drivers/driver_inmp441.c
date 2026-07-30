@@ -152,7 +152,7 @@ bool inmp441_read_sample(SensorContext_t* ctx, float* data_out) {
   if (ret != ESP_OK || bytes_read == 0) {
     *data_out = s_inmp441.last_rms;
     if (noise_injection_is_enabled()) {
-      *data_out += *data_out * rand_gaussian();
+      *data_out += *data_out * rand_gaussian_tracked((uint8_t)ctx->id);
     }
     return true;  // Non-fatal: return last valid
   }
@@ -163,7 +163,7 @@ bool inmp441_read_sample(SensorContext_t* ctx, float* data_out) {
   if (num_pairs == 0) {
     *data_out = s_inmp441.last_rms;
     if (noise_injection_is_enabled()) {
-      *data_out += *data_out * rand_gaussian();
+      *data_out += *data_out * rand_gaussian_tracked((uint8_t)ctx->id);
     }
     return true;
   }
@@ -181,7 +181,7 @@ bool inmp441_read_sample(SensorContext_t* ctx, float* data_out) {
   s_inmp441.last_rms = rms;
   *data_out = rms;
   if (noise_injection_is_enabled()) {
-    *data_out += *data_out * rand_gaussian();
+    *data_out += *data_out * rand_gaussian_tracked((uint8_t)ctx->id);
   }
   return true;
 }

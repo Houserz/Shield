@@ -17,7 +17,7 @@ extern "C" bool gyro_init(SensorContext_t* ctx) {
 }
 
 extern "C" bool gyro_read_sample(SensorContext_t* ctx, float* data_out) {
-  if (data_out == NULL || imu == nullptr) return false;
+  if (ctx == NULL || data_out == NULL || imu == nullptr) return false;
 
   if (!imu->rpt.uncal_gyro.has_new_data()) {
     return false;
@@ -27,10 +27,15 @@ extern "C" bool gyro_read_sample(SensorContext_t* ctx, float* data_out) {
   data_out[0] = d.x;
   data_out[1] = d.y;
   data_out[2] = d.z;
+
   if (noise_injection_is_enabled()) {
-    data_out[0] += data_out[0] * rand_gaussian();
-    data_out[1] += data_out[1] * rand_gaussian();
-    data_out[2] += data_out[2] * rand_gaussian();
+    uint8_t sid = (uint8_t)ctx->id;
+    float n0 = rand_gaussian_tracked(sid);
+    float n1 = rand_gaussian_tracked(sid);
+    float n2 = rand_gaussian_tracked(sid);
+    data_out[0] += data_out[0] * n0;
+    data_out[1] += data_out[1] * n1;
+    data_out[2] += data_out[2] * n2;
   }
   return true;
 }

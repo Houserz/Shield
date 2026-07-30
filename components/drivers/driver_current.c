@@ -59,7 +59,7 @@ bool current_read_sample(SensorContext_t* ctx, float* data_out) {
   *data_out =
       (voltage_divided - ACS723_VIOUT_Q) / (ACS723_SENS_MV_PER_A / 1000.0f);
   if (noise_injection_is_enabled()) {
-    *data_out += *data_out * rand_gaussian();
+    *data_out += *data_out * rand_gaussian_tracked((uint8_t)ctx->id);
   }
   return true;
 }

@@ -46,6 +46,7 @@ typedef struct {
     char slow_file[MAX_FILE_PATH_LEN];    // Slow data file path
     char meta_file[MAX_FILE_PATH_LEN];    // Metadata file path
     char log_file[MAX_FILE_PATH_LEN];     // Log file path
+    char noise_file[MAX_FILE_PATH_LEN];   // Noise data file path
     bool is_active;                       // Whether session is active
 } run_session_t;
 
@@ -70,6 +71,7 @@ typedef struct {
     file_buffer_t fast_buffer;         // Fast data buffer
     file_buffer_t medium_buffer;       // Medium data buffer
     file_buffer_t slow_buffer;         // Slow data buffer
+    file_buffer_t noise_buffer;        // Noise data buffer
     uint64_t total_bytes_written;      // Total bytes written
     uint32_t write_error_count;        // Write error count
 } sd_storage_t;
@@ -129,6 +131,14 @@ bool sd_write_medium_data(const medium_data_record_t *record);
  * @return true=success, false=failure
  */
 bool sd_write_slow_data(const slow_data_record_t *record);
+
+/**
+ * @brief Write noise record (logged in parallel with sensor data during injection)
+ *
+ * @param record Noise record pointer
+ * @return true=success, false=failure
+ */
+bool sd_write_noise_data(const noise_data_record_t *record);
 
 /**
  * @brief Write event log

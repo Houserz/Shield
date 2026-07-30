@@ -250,7 +250,7 @@ bool mpl3115_read_sample(SensorContext_t* ctx, float* data_out) {
   float pa = (float)raw * MPL3115_PA_PER_COUNT;
   *data_out = pa / 1000.0f;
   if (noise_injection_is_enabled()) {
-    *data_out += *data_out * rand_gaussian();
+    *data_out += *data_out * rand_gaussian_tracked((uint8_t)ctx->id);
   }
 
   // Trigger next conversion immediately

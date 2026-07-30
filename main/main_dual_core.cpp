@@ -19,12 +19,12 @@
 
 extern "C" {
 #include "data_types.h"
-#include "driver/gpio.h"
-#include "driver/i2c.h"
-#include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
-#include "freertos/task.h"
+#include <driver/gpio.h>
+#include <driver/i2c.h>
+#include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 #include "gaussian.h"
 #include "sd_storage.h"
 #include "sensor_hal.h"
@@ -56,6 +56,7 @@ static const char* TAG = "SHIELD";
 static QueueHandle_t fast_queue = NULL;
 static QueueHandle_t medium_queue = NULL;
 static QueueHandle_t slow_queue = NULL;
+static QueueHandle_t noise_queue = NULL;  // Noise dataset: one record per injected sample
 
 // ==================== Global State ====================
 static daq_state_t system_state = DAQ_STATE_IDLE;
@@ -210,9 +211,12 @@ void vTaskFast(void* pvParameters) {
 
       float data[3] = {0};
       if (my_sensors[i].read_sample(&my_sensors[i], data)) {
+        uint32_t ts  = get_timestamp_ms();
+        uint8_t  sid = (uint8_t)my_sensors[i].id;
+
         fast_queue_msg_t msg = {.type = QUEUE_MSG_DATA,
-                                .data = {.timestamp_ms = get_timestamp_ms(),
-                                         .sensor_id = (uint8_t)my_sensors[i].id,
+                                .data = {.timestamp_ms = ts,
+                                         .sensor_id = sid,
                                          .reserved = {0},
                                          .data = {data[0], data[1], data[2]}}};
 
@@ -220,6 +224,21 @@ void vTaskFast(void* pvParameters) {
           statistics.queue_overruns++;
         } else {
           statistics.fast_samples++;
+        }
+
+        // Harvest and enqueue the exact per-axis noise multipliers the driver
+        // applied. 3-axis sensors (accel/gyro/mag) call rand_gaussian_tracked()
+        // three times per sample -> noise[0..2]; scalar fast sensors (mic) call
+        // it once -> noise[1..2] = 0. Returns false when injection is disabled.
+        float noise3[3] = {0.0f, 0.0f, 0.0f};
+        if (gaussian_get_last_noise_3(sid, noise3)) {
+          noise_queue_msg_t nmsg = {
+              .type = QUEUE_MSG_DATA,
+              .data = {.timestamp_ms = ts,
+                       .sensor_id    = sid,
+                       .reserved     = {0},
+                       .noise        = {noise3[0], noise3[1], noise3[2]}}};
+          xQueueSend(noise_queue, &nmsg, 0);
         }
       }
     }
@@ -243,10 +262,13 @@ void vTaskMedium(void* pvParameters) {
       if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 200) {
         float data = 0.0f;
         if (my_sensors[i].read_sample(&my_sensors[i], &data)) {
+          uint32_t ts  = get_timestamp_ms();
+          uint8_t  sid = (uint8_t)my_sensors[i].id;
+
           medium_queue_msg_t msg = {
               .type = QUEUE_MSG_DATA,
-              .data = {.timestamp_ms = get_timestamp_ms(),
-                       .sensor_id = (uint8_t)my_sensors[i].id,
+              .data = {.timestamp_ms = ts,
+                       .sensor_id = sid,
                        .reserved = {0},
                        .data = data}};
 
@@ -254,6 +276,17 @@ void vTaskMedium(void* pvParameters) {
             statistics.queue_overruns++;
           } else {
             statistics.medium_samples++;
+          }
+
+          float n = 0.0f;
+          if (gaussian_get_last_noise(sid, &n)) {
+            noise_queue_msg_t nmsg = {
+                .type = QUEUE_MSG_DATA,
+                .data = {.timestamp_ms = ts,
+                         .sensor_id    = sid,
+                         .reserved     = {0},
+                         .noise        = {n, 0.0f, 0.0f}}};
+            xQueueSend(noise_queue, &nmsg, 0);
           }
         }
       }
@@ -278,10 +311,13 @@ void vTaskSlow(void* pvParameters) {
       if (my_sensors[i].enabled && my_sensors[i].sampling_rate_hz == 50) {
         float data = 0.0f;
         if (my_sensors[i].read_sample(&my_sensors[i], &data)) {
+          uint32_t ts  = get_timestamp_ms();
+          uint8_t  sid = (uint8_t)my_sensors[i].id;
+
           slow_queue_msg_t msg = {
               .type = QUEUE_MSG_DATA,
-              .data = {.timestamp_ms = get_timestamp_ms(),
-                       .sensor_id = (uint8_t)my_sensors[i].id,
+              .data = {.timestamp_ms = ts,
+                       .sensor_id = sid,
                        .reserved = {0},
                        .data = data}};
 
@@ -289,6 +325,17 @@ void vTaskSlow(void* pvParameters) {
             statistics.queue_overruns++;
           } else {
             statistics.slow_samples++;
+          }
+
+          float n = 0.0f;
+          if (gaussian_get_last_noise(sid, &n)) {
+            noise_queue_msg_t nmsg = {
+                .type = QUEUE_MSG_DATA,
+                .data = {.timestamp_ms = ts,
+                         .sensor_id    = sid,
+                         .reserved     = {0},
+                         .noise        = {n, 0.0f, 0.0f}}};
+            xQueueSend(noise_queue, &nmsg, 0);
           }
         }
       }
@@ -340,6 +387,17 @@ void vTaskSDWriter(void* pvParameters) {
     while (xQueueReceive(slow_queue, &slow_msg, 0) == pdTRUE) {
       if (slow_msg.type == QUEUE_MSG_DATA) {
         if (!sd_write_slow_data(&slow_msg.data)) {
+          statistics.sd_errors++;
+        }
+        has_data = true;
+      }
+    }
+
+    // Process Noise queue (only populated while injection is active)
+    noise_queue_msg_t noise_msg;
+    while (xQueueReceive(noise_queue, &noise_msg, 0) == pdTRUE) {
+      if (noise_msg.type == QUEUE_MSG_DATA) {
+        if (!sd_write_noise_data(&noise_msg.data)) {
           statistics.sd_errors++;
         }
         has_data = true;
@@ -458,8 +516,9 @@ extern "C" void app_main(void) {
   fast_queue = xQueueCreate(FAST_QUEUE_SIZE, sizeof(fast_queue_msg_t));
   medium_queue = xQueueCreate(MEDIUM_QUEUE_SIZE, sizeof(medium_queue_msg_t));
   slow_queue = xQueueCreate(SLOW_QUEUE_SIZE, sizeof(slow_queue_msg_t));
+  noise_queue = xQueueCreate(NOISE_QUEUE_SIZE, sizeof(noise_queue_msg_t));
 
-  if (!fast_queue || !medium_queue || !slow_queue) {
+  if (!fast_queue || !medium_queue || !slow_queue || !noise_queue) {
     ESP_LOGE(TAG,
              "Queue creation FAILED (fast=%p medium=%p slow=%p) - aborting",
              fast_queue, medium_queue, slow_queue);
@@ -544,6 +603,7 @@ extern "C" void app_main(void) {
   vQueueDelete(fast_queue);
   vQueueDelete(medium_queue);
   vQueueDelete(slow_queue);
+  vQueueDelete(noise_queue);
   sd_storage_deinit();
   gpio_set_level(STATUS_LED_PIN, 0);
 

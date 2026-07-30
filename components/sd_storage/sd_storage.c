@@ -239,11 +239,14 @@ bool sd_create_run_session(void) {
              "%s/meta.json", storage.current_session.run_path);
     snprintf(storage.current_session.log_file, MAX_FILE_PATH_LEN,
              "%s/events.log", storage.current_session.run_path);
+    snprintf(storage.current_session.noise_file, MAX_FILE_PATH_LEN,
+             "%s/noise_data.bin", storage.current_session.run_path);
     
     // Open data files
     storage.fast_buffer.file = fopen(storage.current_session.fast_file, "wb");
     storage.medium_buffer.file = fopen(storage.current_session.medium_file, "wb");
     storage.slow_buffer.file = fopen(storage.current_session.slow_file, "wb");
+    storage.noise_buffer.file = fopen(storage.current_session.noise_file, "wb");
     
     if (!storage.fast_buffer.file) {
         ESP_LOGE(TAG, "fopen failed (fast_data): path=%s errno=%d (%s)",
@@ -279,6 +282,10 @@ bool sd_create_run_session(void) {
     storage.slow_buffer.is_open = true;
     storage.slow_buffer.buffer_pos = 0;
     storage.slow_buffer.last_flush_time = get_timestamp_ms();
+
+    storage.noise_buffer.is_open = true;
+    storage.noise_buffer.buffer_pos = 0;
+    storage.noise_buffer.last_flush_time = get_timestamp_ms();
     
     storage.current_session.is_active = true;
     
@@ -313,7 +320,12 @@ bool sd_close_run_session(void) {
         fclose(storage.slow_buffer.file);
         storage.slow_buffer.is_open = false;
     }
-    
+
+    if (storage.noise_buffer.is_open && storage.noise_buffer.file) {
+        fclose(storage.noise_buffer.file);
+        storage.noise_buffer.is_open = false;
+    }
+
     sd_write_log("INFO", "Session closed");
     
     storage.current_session.is_active = false;
@@ -342,6 +354,10 @@ bool sd_write_slow_data(const slow_data_record_t *record) {
     return write_to_buffer(&storage.slow_buffer, record, sizeof(slow_data_record_t));
 }
 
+bool sd_write_noise_data(const noise_data_record_t *record) {
+    return write_to_buffer(&storage.noise_buffer, record, sizeof(noise_data_record_t));
+}
+
 /**
  * @brief Write event log
  */
@@ -367,7 +383,8 @@ bool sd_flush_all_buffers(void) {
     if (!flush_buffer(&storage.fast_buffer)) success = false;
     if (!flush_buffer(&storage.medium_buffer)) success = false;
     if (!flush_buffer(&storage.slow_buffer)) success = false;
-    
+    if (!flush_buffer(&storage.noise_buffer)) success = false;
+
     return success;
 }
 
