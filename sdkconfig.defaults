@@ -1,0 +1,9 @@
+# SHIELD DAQ - project default sdkconfig values
+# Applied when sdkconfig is (re)generated, e.g. after `idf.py set-target`.
+
+# --- FATFS long filename support ---
+# Required so the DAQ can create files like fast_data.bin / medium_data.bin /
+# slow_data.bin (9-11 char base names exceed the 8.3 short-name limit).
+# Without this, fopen() fails with errno 22 (EINVAL / FR_INVALID_NAME).
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
