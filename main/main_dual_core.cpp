@@ -41,11 +41,11 @@ bool mag_read_sample(SensorContext_t* ctx, float* data_out);
 #define STATUS_LED_PIN GPIO_NUM_4
 #define BUTTON_PIN GPIO_NUM_46
 
-#define RUN_DURATION 90UL  // Currently configured to run for 90 minutes
+#define RUN_DURATION 70UL  // Shaker-table experiment: run for 1 hr 10 min (70 minutes)
 #define NOISE_INJECTION_DELAY 30UL
 #define MS_PER_HR 3600000UL
 #define MS_PER_MIN 60000UL
-#define NOISE_INJECTION true
+#define NOISE_INJECTION false  // Noise injection disabled for shaker-table experiment
 
 static const bool TESTING_SHORT_DURATION =
     true;  // [DEPRECATED]: Use button press to stop daq instead
