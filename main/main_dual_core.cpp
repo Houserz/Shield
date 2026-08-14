@@ -38,9 +38,7 @@ bool mag_init(SensorContext_t* ctx);
 bool mag_read_sample(SensorContext_t* ctx, float* data_out);
 }
 
-// On-board status LEDs (per PCB netlist: GPIO4=Green LED1, GPIO7=Blue LED2, GPIO8=Red LED3)
-#define GREEN_ACTIVITY_LED_PIN GPIO_NUM_4  // Flashes while the SD writer task is reading/writing
-#define RED_ERROR_LED_PIN GPIO_NUM_8       // Latches on if any SD write fails during the run
+#define STATUS_LED_PIN GPIO_NUM_4
 #define BUTTON_PIN GPIO_NUM_46
 
 #define RUN_DURATION 70UL  // Shaker-table experiment: run for 1 hr 10 min (70 minutes)
@@ -323,7 +321,6 @@ void vTaskSDWriter(void* pvParameters) {
       if (fast_msg.type == QUEUE_MSG_DATA) {
         if (!sd_write_fast_data(&fast_msg.data)) {
           statistics.sd_errors++;
-          gpio_set_level(RED_ERROR_LED_PIN, 1);
         }
         has_data = true;
       }
@@ -334,7 +331,6 @@ void vTaskSDWriter(void* pvParameters) {
       if (medium_msg.type == QUEUE_MSG_DATA) {
         if (!sd_write_medium_data(&medium_msg.data)) {
           statistics.sd_errors++;
-          gpio_set_level(RED_ERROR_LED_PIN, 1);
         }
         has_data = true;
       }
@@ -345,25 +341,15 @@ void vTaskSDWriter(void* pvParameters) {
       if (slow_msg.type == QUEUE_MSG_DATA) {
         if (!sd_write_slow_data(&slow_msg.data)) {
           statistics.sd_errors++;
-          gpio_set_level(RED_ERROR_LED_PIN, 1);
         }
         has_data = true;
       }
     }
 
-    // Green LED tracks whether the writer is actively pushing samples
-    // into the SD buffers this pass.
-    gpio_set_level(GREEN_ACTIVITY_LED_PIN, has_data ? 1 : 0);
-
     // Periodically flush buffers and update statistics (every second)
     uint32_t current_time = get_timestamp_ms();
     if (current_time - last_stats_update > 1000) {
-      // sd_flush_all_buffers() is where buffered bytes actually hit the
-      // card, so hold the activity LED on for the duration of the flush.
-      gpio_set_level(GREEN_ACTIVITY_LED_PIN, 1);
       sd_flush_all_buffers();
-      gpio_set_level(GREEN_ACTIVITY_LED_PIN, has_data ? 1 : 0);
-
       statistics.duration_ms = current_time;
 
       // Update metadata
@@ -382,9 +368,7 @@ void vTaskSDWriter(void* pvParameters) {
   }
 
   // Final flush
-  gpio_set_level(GREEN_ACTIVITY_LED_PIN, 1);
   sd_flush_all_buffers();
-  gpio_set_level(GREEN_ACTIVITY_LED_PIN, 0);
 
   vTaskDelete(NULL);
 }
@@ -483,17 +467,15 @@ extern "C" void app_main(void) {
   }
   ESP_LOGI(TAG, "FreeRTOS queues created OK");
 
-  // Configure green (SD activity) and red (SD error) status LEDs
+  // Configure status LED (GPIO 4) - on while acquiring, off when done
   gpio_config_t led_cfg = {
-      .pin_bit_mask = (1ULL << GREEN_ACTIVITY_LED_PIN) | (1ULL << RED_ERROR_LED_PIN),
+      .pin_bit_mask = (1ULL << STATUS_LED_PIN),
       .mode = GPIO_MODE_OUTPUT,
       .pull_up_en = GPIO_PULLUP_DISABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
       .intr_type = GPIO_INTR_DISABLE,
   };
   gpio_config(&led_cfg);
-  gpio_set_level(GREEN_ACTIVITY_LED_PIN, 0);
-  gpio_set_level(RED_ERROR_LED_PIN, 0);
 
   // Configure button input (GPIO 46) - press to stop data acquisition
   gpio_config_t btn_conf = {
@@ -507,6 +489,7 @@ extern "C" void app_main(void) {
 
   // Set to running state
   system_state = DAQ_STATE_RUNNING;
+  gpio_set_level(STATUS_LED_PIN, 1);
   ESP_LOGI(TAG, "System state -> RUNNING, launching tasks...");
 
   // Core 0 (PRO_CPU): Data acquisition tasks
@@ -562,6 +545,7 @@ extern "C" void app_main(void) {
   vQueueDelete(medium_queue);
   vQueueDelete(slow_queue);
   sd_storage_deinit();
+  gpio_set_level(STATUS_LED_PIN, 0);
 
   ESP_LOGI(TAG, "========== Project SHIELD finished ==========");
   ESP_LOGI(TAG,
