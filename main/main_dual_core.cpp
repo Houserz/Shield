@@ -114,6 +114,19 @@ static inmp441_i2s_config_t inmp441_i2s_cfg = {
     .sample_rate_hz = 16000  // INMP441 typical; decimate to 1kHz logical rate
 };
 
+// ==================== B4 bias injection (compile-time) ====================
+// Set per-axis bias values here, rebuild, and re-flash before each B4 session.
+// Units: m/s^2 for accelerometer, rad/s for gyroscope, uT for magnetometer.
+static const float B4_BIAS_ACCEL_X = 0.0f;
+static const float B4_BIAS_ACCEL_Y = 0.0f;
+static const float B4_BIAS_ACCEL_Z = 0.0f;
+static const float B4_BIAS_GYRO_X  = 0.0f;
+static const float B4_BIAS_GYRO_Y  = 0.0f;
+static const float B4_BIAS_GYRO_Z  = 0.0f;
+static const float B4_BIAS_MAG_X   = 0.0f;
+static const float B4_BIAS_MAG_Y   = 0.0f;
+static const float B4_BIAS_MAG_Z   = 0.0f;
+
 // ==================== Sensor Array Definition ====================
 // Set .enabled = false to disable a sensor (skip init and acquisition)
 
@@ -210,6 +223,21 @@ void vTaskFast(void* pvParameters) {
 
       float data[3] = {0};
       if (my_sensors[i].read_sample(&my_sensors[i], data)) {
+        // B4 bias injection
+        if (my_sensors[i].type == SENSOR_TYPE_ACCELEROMETER) {
+          data[0] += B4_BIAS_ACCEL_X;
+          data[1] += B4_BIAS_ACCEL_Y;
+          data[2] += B4_BIAS_ACCEL_Z;
+        } else if (my_sensors[i].type == SENSOR_TYPE_GYROSCOPE) {
+          data[0] += B4_BIAS_GYRO_X;
+          data[1] += B4_BIAS_GYRO_Y;
+          data[2] += B4_BIAS_GYRO_Z;
+        } else if (my_sensors[i].type == SENSOR_TYPE_MAGNETOMETER) {
+          data[0] += B4_BIAS_MAG_X;
+          data[1] += B4_BIAS_MAG_Y;
+          data[2] += B4_BIAS_MAG_Z;
+        }
+
         fast_queue_msg_t msg = {.type = QUEUE_MSG_DATA,
                                 .data = {.timestamp_ms = get_timestamp_ms(),
                                          .sensor_id = (uint8_t)my_sensors[i].id,
