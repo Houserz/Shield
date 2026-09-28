@@ -9,17 +9,43 @@
  *   ADDR -> GND  => I2C address 0x48
  *   A0   -> Photodiode output
  *   A1   -> ACS723 Current sensor output
+ *
+ * REVIEW-1 CHANGE (C-11 item 2, manuscript §3.3.1 lines 333-346, §3.7 lines
+ * 451-455): the original driver waited vTaskDelay(pdMS_TO_TICKS(2)) for the
+ * conversion. On the recording build (CONFIG_FREERTOS_HZ=100) that is zero
+ * ticks, so the driver read the conversion register immediately and returned
+ * the PREVIOUS conversion. Because the current (A1) and photodiode (A0) reads
+ * alternate on one converter, every photodiode sample repeated the current
+ * sample and the photodiode was never measured in Tier 2 or Tier 1 session
+ * 002. This version polls the OS bit of the config register (bit 15: 1 =
+ * device idle, conversion complete) with a bounded microsecond timeout, so
+ * the result is independent of the tick rate.
  */
 
 #include "sensor_hal.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 static const char *TAG = "ads1115";
 
+/* Conversion at 860 SPS takes ~1.16 ms; allow 5 ms before declaring a fault. */
+#define ADS1115_CONV_TIMEOUT_US   5000
+#define ADS1115_POLL_INTERVAL_US  100
+
+/* Statistics visible to the application (read with ads1115_get_stats). */
+static uint32_t s_conv_timeouts = 0;
+static uint32_t s_i2c_errors = 0;
+
+void ads1115_get_stats(uint32_t *conv_timeouts, uint32_t *i2c_errors) {
+    if (conv_timeouts) *conv_timeouts = s_conv_timeouts;
+    if (i2c_errors) *i2c_errors = s_i2c_errors;
+}
+
 /**
- * @brief Trigger single-shot conversion and read result
+ * @brief Trigger single-shot conversion, wait for completion, read result
  */
 bool ads1115_read_voltage(const ads1115_config_t *cfg, uint16_t channel, float *voltage_out) {
     if (cfg == NULL || voltage_out == NULL) return false;
@@ -45,12 +71,37 @@ bool ads1115_read_voltage(const ads1115_config_t *cfg, uint16_t channel, float *
         pdMS_TO_TICKS(100)
     );
     if (err != ESP_OK) {
+        s_i2c_errors++;
         ESP_LOGE(TAG, "Config write failed: %s", esp_err_to_name(err));
         return false;
     }
 
-    // Wait for conversion (860SPS = ~1.2ms, add margin)
-    vTaskDelay(pdMS_TO_TICKS(2));
+    // Wait for conversion: poll the OS bit (bit 15 of the config register).
+    // 0 = conversion in progress, 1 = idle (conversion complete).
+    const int64_t t0 = esp_timer_get_time();
+    for (;;) {
+        uint8_t creg = ADS1115_CONFIG_REG;
+        uint8_t cb[2] = {0, 0};
+        err = i2c_master_write_read_device(
+            cfg->i2c_port, cfg->i2c_addr,
+            &creg, 1, cb, sizeof(cb),
+            pdMS_TO_TICKS(100)
+        );
+        if (err != ESP_OK) {
+            s_i2c_errors++;
+            ESP_LOGE(TAG, "Config read-back failed: %s", esp_err_to_name(err));
+            return false;
+        }
+        if (cb[0] & 0x80) {
+            break;  // OS bit set: conversion complete
+        }
+        if (esp_timer_get_time() - t0 > ADS1115_CONV_TIMEOUT_US) {
+            s_conv_timeouts++;
+            ESP_LOGW(TAG, "Conversion timeout on channel 0x%04X", channel);
+            return false;  // do not return a stale value
+        }
+        esp_rom_delay_us(ADS1115_POLL_INTERVAL_US);
+    }
 
     // Point to conversion register
     uint8_t reg = ADS1115_CONV_REG;
@@ -60,6 +111,7 @@ bool ads1115_read_voltage(const ads1115_config_t *cfg, uint16_t channel, float *
         pdMS_TO_TICKS(100)
     );
     if (err != ESP_OK) {
+        s_i2c_errors++;
         ESP_LOGE(TAG, "Register select failed: %s", esp_err_to_name(err));
         return false;
     }
@@ -72,6 +124,7 @@ bool ads1115_read_voltage(const ads1115_config_t *cfg, uint16_t channel, float *
         pdMS_TO_TICKS(100)
     );
     if (err != ESP_OK) {
+        s_i2c_errors++;
         ESP_LOGE(TAG, "Read failed: %s", esp_err_to_name(err));
         return false;
     }

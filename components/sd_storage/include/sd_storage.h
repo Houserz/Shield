@@ -3,6 +3,10 @@
  * @brief SD card storage module (SPI mode)
  *
  * Provides SD card initialization, file system mounting, run directory management, etc.
+ *
+ * REVIEW-1 CHANGES (C-11 item 1): periodic fsync, checked close with a
+ * per-file size report, boot self-test with remount retries, max_files 8,
+ * operator markers. See sd_storage.c for the rationale.
  */
 
 #ifndef SD_STORAGE_H
@@ -33,6 +37,11 @@
 #define MAX_DIR_PATH_LEN    256  // For directory paths
 #define MAX_FILE_PATH_LEN   320  // For full file paths (directory + filename)
 
+// Review-1 additions
+#define SD_SYNC_INTERVAL_MS   5000   // fsync each tier file at least this often
+#define SD_SELFTEST_BYTES     65536  // boot self-test file size
+#define SD_SELFTEST_ATTEMPTS  3      // mount + self-test attempts before giving up
+
 // ==================== Data Structures ====================
 
 /**
@@ -56,7 +65,8 @@ typedef struct {
     FILE *file;                       // File handle
     uint8_t buffer[WRITE_BUFFER_SIZE]; // Buffer
     size_t buffer_pos;                 // Current buffer position
-    uint32_t last_flush_time;          // Last flush time
+    uint32_t last_flush_time;          // Last flush time (libc -> VFS)
+    uint32_t last_sync_time;           // Last fsync time (VFS -> card)
     bool is_open;                      // Whether file is open
 } file_buffer_t;
 
@@ -71,102 +81,73 @@ typedef struct {
     file_buffer_t medium_buffer;       // Medium data buffer
     file_buffer_t slow_buffer;         // Slow data buffer
     uint64_t total_bytes_written;      // Total bytes written
-    uint32_t write_error_count;        // Write error count
+    uint32_t write_error_count;        // fwrite/fflush/fclose error count
+    uint32_t sync_error_count;         // fsync error count
+    int      selftest_attempts;        // mount attempts used at init
 } sd_storage_t;
+
+/**
+ * @brief Report of the last closed session (sizes read back from the card)
+ */
+typedef struct {
+    bool     valid;
+    bool     close_ok;        // all files closed, synced and non-empty
+    uint32_t fast_bytes;
+    uint32_t medium_bytes;
+    uint32_t slow_bytes;
+    uint32_t write_errors;
+    uint32_t sync_errors;
+    uint32_t log_failures;
+} sd_close_report_t;
 
 // ==================== Function Declarations ====================
 
-/**
- * @brief Initialize SD card (SPI mode)
- *
- * @return true=success, false=failure
- */
 bool sd_storage_init(void);
-
-/**
- * @brief Deinitialize SD card
- */
 void sd_storage_deinit(void);
-
-/**
- * @brief Create new run session
- * 
- * Automatically generates run ID (RUN_001, RUN_002...), creates directories and files
- * 
- * @return true=success, false=failure
- */
 bool sd_create_run_session(void);
 
 /**
- * @brief Close current run session
- * 
- * Flushes all buffers, closes files, updates metadata
- * 
- * @return true=success, false=failure
+ * @brief Close current run session: flush, fsync, fclose, stat.
+ * @return true only if every tier file closed cleanly and is non-empty
  */
 bool sd_close_run_session(void);
 
-/**
- * @brief Write fast data record
- * 
- * @param record Data record pointer
- * @return true=success, false=failure
- */
 bool sd_write_fast_data(const fast_data_record_t *record);
-
-/**
- * @brief Write medium data record
- * 
- * @param record Data record pointer
- * @return true=success, false=failure
- */
 bool sd_write_medium_data(const medium_data_record_t *record);
-
-/**
- * @brief Write slow data record
- * 
- * @param record Data record pointer
- * @return true=success, false=failure
- */
 bool sd_write_slow_data(const slow_data_record_t *record);
 
 /**
- * @brief Write event log
- * 
- * @param level Log level ("INFO", "WARN", "ERROR")
- * @param message Log message
+ * @brief Write event log ("INFO", "WARN", "ERROR", "MARK")
  */
 void sd_write_log(const char *level, const char *message);
 
 /**
- * @brief Flush all buffers to SD card
- * 
- * @return true=success, false=failure
+ * @brief Write an operator marker line to events.log with the record clock
+ *        (t_ms, same clock as timestamp_ms in the data files) and esp_timer µs.
  */
+void sd_write_marker(const char *label);
+
 bool sd_flush_all_buffers(void);
 
 /**
- * @brief Get SD card information
- * 
- * @param total_mb Total capacity (MB)
- * @param free_mb Free capacity (MB)
- * @return true=success, false=failure
+ * @brief Flush and fsync every open tier file now
  */
+bool sd_sync_all(void);
+
 bool sd_get_card_info(uint64_t *total_mb, uint64_t *free_mb);
-
-/**
- * @brief Get current run session information
- * 
- * @return Run session pointer (read-only)
- */
 const run_session_t* sd_get_current_session(void);
+void sd_get_statistics(uint64_t *bytes_written, uint32_t *error_count);
 
 /**
- * @brief Get storage statistics
- * 
- * @param bytes_written Bytes written
- * @param error_count Error count
+ * @brief Copy of the last close report (valid after sd_close_run_session)
  */
-void sd_get_statistics(uint64_t *bytes_written, uint32_t *error_count);
+bool sd_get_last_close(sd_close_report_t *out);
+
+/**
+ * @brief True if any storage error was latched since init
+ */
+bool sd_storage_fault(void);
+
+int sd_get_selftest_attempts(void);
 
 #endif // SD_STORAGE_H

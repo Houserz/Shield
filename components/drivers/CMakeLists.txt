@@ -6,6 +6,5 @@ idf_component_register(
          "driver_mcp9808.c"
          "driver_ads1115.c"
     INCLUDE_DIRS "."
-    REQUIRES sensor_hal driver esp_driver_i2s esp_adc esp32_BNO08x gaussian
+    REQUIRES sensor_hal driver esp_driver_i2s esp_adc esp32_BNO08x gaussian esp_timer
 )
-
