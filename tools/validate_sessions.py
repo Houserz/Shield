@@ -11,15 +11,26 @@ folders) and reports, per session:
     statistics (samples, queue_overruns, sd_write_errors)
   * board_mac, firmware_git, freertos_tick_hz, rtc_set, BNO085 calibration
     config as written by the firmware
-  * G0.11 channel-identity check on medium_data.bin: fraction of consecutive
-    (current, photodiode) pairs with identical stored values. The released
-    Tier 2 corpus fails this with ~1.0 (photodiode never converted); a
-    passing session is far below 0.05.
+  * G0.11 channel-identity check on medium_data.bin: fraction of
+    (current, photodiode) sample pairs (paired by timestamp) that satisfy the
+    exact functional relation the unconverted-photodiode defect produces.
+    The current driver stores I = (1.6 V - 2.5) / 0.4 = 4 V - 6.25 of the raw
+    ADS1115 voltage V, and the photodiode driver stores V itself, so when both
+    reads return the same conversion I = 4 * V_photodiode - 6.25 (to float32
+    rounding). The released Tier 2 corpus fails this with ~1.0 (photodiode never
+    converted); a passing session is far below 0.05. NOTE: testing for
+    *equal* stored values would pass the broken firmware, because the two
+    channels are stored in different units.
   * achieved rates per channel from timestamp_ms (median spacing)
   * number of MARK lines in events.log
 
 Exit code 0 when every session passes, 1 otherwise. The A2 pass criterion is
 10 of 10 sessions passing (5 per board, each from a power cycle, >= 20 min).
+
+Campaign use (after every session, before the next one starts):
+  python tools\validate_sessions.py D:\ --runs RUN_004 --expect 1 --min-duration-min 15 --json v_RUN_004.json
+--runs limits the check to the named folders (comma separated); --min-duration-min
+overrides the 20 min default (the 20 min B1-P intermittent sessions need <= 15).
 
 Record layouts (unchanged from the released firmware):
   fast_data.bin   16 B: u32 timestamp_ms, u8 sensor_id, 3 pad, 3 x f32
@@ -41,8 +52,8 @@ MED_SZ = struct.calcsize(MED_FMT)     # 12
 CHANNEL_NAMES = {1: "vibration", 2: "current", 3: "pressure", 4: "temperature",
                  5: "microphone", 6: "photodiode", 7: "magnetometer", 8: "gyroscope", 9: "accelerometer"}
 
-MIN_DURATION_S = 20 * 60
-G011_MAX_IDENTICAL_FRACTION = 0.05
+MIN_DURATION_S = 20 * 60          # overridden by --min-duration-min
+G011_MAX_RELATED_FRACTION = 0.05
 
 
 def read_records(path, fmt, size):
@@ -80,15 +91,34 @@ def achieved_rates(records):
     return rates
 
 
+G011_TOL_A = 1e-4     # A; 0.2 of an ADS1115 count at +-4.096 V once multiplied by the 4 A/V slope
+G011_SLOPE = 4.0      # A per V:  (1.6 / 0.4)
+G011_OFFSET = -6.25   # A:        -2.5 / 0.4
+
+
 def g011_identity(medium_records):
-    """fraction of consecutive current/photodiode pairs whose stored floats are identical"""
-    cur = [r for r in medium_records if r[1] == 2]
-    pho = [r for r in medium_records if r[1] == 6]
-    n = min(len(cur), len(pho))
-    if n == 0:
+    """fraction of current/photodiode pairs with I == 4*V_pd - 6.25 (unconverted photodiode signature).
+
+    Pairs are formed by timestamp; if the two channels share no timestamps (unexpected) they are
+    paired in order. Returns (fraction or None, number of pairs)."""
+    cur = {}
+    pho = {}
+    for r in medium_records:
+        if r[1] == 2:
+            cur.setdefault(r[0], r[2])
+        elif r[1] == 6:
+            pho.setdefault(r[0], r[2])
+    common = sorted(set(cur) & set(pho))
+    if common:
+        pairs = [(cur[t], pho[t]) for t in common]
+    else:
+        c = [r[2] for r in medium_records if r[1] == 2]
+        p = [r[2] for r in medium_records if r[1] == 6]
+        pairs = list(zip(c, p))
+    if not pairs:
         return None, 0
-    same = sum(1 for i in range(n) if cur[i][2] == pho[i][2])
-    return same / n, n
+    related = sum(1 for i_cur, v_pd in pairs if abs(i_cur - (G011_SLOPE * v_pd + G011_OFFSET)) <= G011_TOL_A)
+    return related / len(pairs), len(pairs)
 
 
 def check_session(run_dir):
@@ -147,14 +177,14 @@ def check_session(run_dir):
     # G0.11 on the medium tier
     med = read_records(os.path.join(run_dir, "medium_data.bin"), MED_FMT, MED_SZ)
     frac, npairs = g011_identity(med)
-    res["g011_identical_fraction"] = frac
+    res["g011_related_fraction"] = frac
     res["g011_pairs"] = npairs
     if frac is None:
         res["pass"] = False
         res["reasons"].append("no current/photodiode pairs")
-    elif frac > G011_MAX_IDENTICAL_FRACTION:
+    elif frac > G011_MAX_RELATED_FRACTION:
         res["pass"] = False
-        res["reasons"].append(f"G0.11 fails: {frac:.3f} of pairs identical (photodiode not converting)")
+        res["reasons"].append(f"G0.11 fails: {frac:.3f} of pairs satisfy I = 4*V_pd - 6.25 (photodiode not converting)")
 
     # rates
     fast = read_records(os.path.join(run_dir, "fast_data.bin"), FAST_FMT, FAST_SZ)
@@ -184,13 +214,20 @@ def main():
     ap.add_argument("roots", nargs="+", help="SD card root(s) or folders containing RUN_xxx")
     ap.add_argument("--expect", type=int, default=10, help="sessions expected to pass (A2: 10)")
     ap.add_argument("--json", help="write the full report here")
+    ap.add_argument("--runs", help="comma-separated RUN_xxx folder names to check (default: all)")
+    ap.add_argument("--min-duration-min", type=float, default=20.0,
+                    help="minimum session duration in minutes (default 20)")
     args = ap.parse_args()
+    global MIN_DURATION_S
+    MIN_DURATION_S = args.min_duration_min * 60.0
+    wanted = {x.strip() for x in args.runs.split(",")} if args.runs else None
 
     runs = []
     for root in args.roots:
         for name in sorted(os.listdir(root)):
             if name.startswith("RUN_") and os.path.isdir(os.path.join(root, name)):
-                runs.append(os.path.join(root, name))
+                if wanted is None or name in wanted:
+                    runs.append(os.path.join(root, name))
     if not runs:
         print("no RUN_xxx folders found")
         sys.exit(1)
@@ -201,7 +238,7 @@ def main():
     print(f"{'run':<9} {'pass':<5} {'fast_B':>10} {'med_B':>9} {'slow_B':>8} {'dur_s':>6} {'ovr':>6} {'g011':>6} {'mac':<18} {'git':<14} reasons")
     for r in results:
         s = r["sizes"]
-        g011 = r["g011_identical_fraction"]
+        g011 = r["g011_related_fraction"]
         g011_txt = f"{g011:.3f}" if g011 is not None else "n/a"
         reasons = "; ".join(r["reasons"])
         print(f"{r['run']:<9} {'OK' if r['pass'] else 'FAIL':<5} {s['fast']:>10} {s['medium']:>9} {s['slow']:>8} "
@@ -215,7 +252,7 @@ def main():
         with open(args.json, "w") as f:
             json.dump(results, f, indent=2)
     verdict = passed >= args.expect and passed == len(results)
-    print("A2 VALIDATION:", "PASS" if verdict else "FAIL")
+    print(f"VALIDATION ({passed} of {len(results)} pass, {args.expect} expected):", "PASS" if verdict else "FAIL")
     sys.exit(0 if verdict else 1)
 
 
