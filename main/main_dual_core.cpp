@@ -50,6 +50,7 @@ extern "C" {
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "driver/uart.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -343,6 +344,10 @@ static void handle_console_line(char* line) {
 // instead of UART0, switch this to the usb_serial_jtag driver (see the C-11
 // note); the button marker works regardless.
 void vTaskConsole(void* pvParameters) {
+  // Review-1: the boards are attached through the S3's native USB (USB-Serial-JTAG), which is only a
+  // secondary console in this sdkconfig, so UART0 never sees what the laptop types. Read both:
+  // UART0 (a USB-UART adapter on GPIO43/44) and the USB-Serial-JTAG port (the COM port the laptop sees).
+  bool have_uart = false, have_usj = false;
   uart_config_t cfg = {};
   cfg.baud_rate = 115200;
   cfg.data_bits = UART_DATA_8_BITS;
@@ -350,18 +355,35 @@ void vTaskConsole(void* pvParameters) {
   cfg.stop_bits = UART_STOP_BITS_1;
   cfg.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
   cfg.source_clk = UART_SCLK_DEFAULT;
-  if (uart_driver_install(UART_NUM_0, 1024, 0, 0, NULL, 0) != ESP_OK) {
-    ESP_LOGW(TAG, "console: uart_driver_install failed; serial commands disabled");
+  if (uart_driver_install(UART_NUM_0, 1024, 0, 0, NULL, 0) == ESP_OK) {
+    uart_param_config(UART_NUM_0, &cfg);
+    have_uart = true;
+  }
+  usb_serial_jtag_driver_config_t ucfg = {};
+  ucfg.tx_buffer_size = 256;
+  ucfg.rx_buffer_size = 1024;
+  if (usb_serial_jtag_driver_install(&ucfg) == ESP_OK) {
+    have_usj = true;
+  }
+  ESP_LOGI(TAG, "console input: UART0 %s, USB-Serial-JTAG %s",
+           have_uart ? "on" : "off", have_usj ? "on" : "off");
+  if (!have_uart && !have_usj) {
+    ESP_LOGW(TAG, "console: no input driver; serial commands disabled (button still works)");
     vTaskDelete(NULL);
     return;
   }
-  uart_param_config(UART_NUM_0, &cfg);
 
   static char line[96];
   int n = 0;
   for (;;) {
-    uint8_t c;
-    int r = uart_read_bytes(UART_NUM_0, &c, 1, pdMS_TO_TICKS(100));
+    uint8_t c = 0;
+    int r = 0;
+    if (have_uart) {
+      r = uart_read_bytes(UART_NUM_0, &c, 1, have_usj ? 0 : pdMS_TO_TICKS(100));
+    }
+    if (r != 1 && have_usj) {
+      r = usb_serial_jtag_read_bytes(&c, 1, pdMS_TO_TICKS(have_uart ? 20 : 100));
+    }
     if (r == 1) {
       if (c == '\n' || c == '\r') {
         line[n] = '\0';
