@@ -1566,6 +1566,7 @@ static void getCalConfigRx(sh2_t *pSh2, const uint8_t *payload, uint16_t len)
 const sh2_Op_t getCalConfigOp = {
     .start = getCalConfigStart,
     .rx = getCalConfigRx,
+    .timeout_us = 1000000,   // review-1: bound the wait; with 0 opProcess() spins forever if the reply never arrives
 };
 
 // ------------------------------------------------------------------------
