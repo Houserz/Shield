@@ -402,7 +402,11 @@ void vTaskConsole(void* pvParameters) {
         line[n++] = (char)c;
       }
     }
-    if (system_state == DAQ_STATE_STOPPING) break;
+    // The console must outlive a session: system_state goes to STOPPING at the end of
+    // every recording, and the session loop then opens the next one. Exiting on STOPPING
+    // left sessions 2..n with nothing listening for MARK, STOP or QUIT. Only g_shutdown
+    // (console QUIT) ends this task.
+    if (g_shutdown) break;
   }
   vTaskDelete(NULL);
 }
