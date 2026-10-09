@@ -112,6 +112,10 @@ static daq_state_t system_state = DAQ_STATE_IDLE;
 static daq_statistics_t statistics = {};
 static volatile bool g_stop_requested = false;
 static volatile uint32_t g_marker_count = 0;
+// Review-1 campaign: a whole night of sessions must run from one power-on, so the
+// session below is a loop. QUIT on the console ends that loop after the session in
+// progress has been closed and verified.
+static volatile bool g_shutdown = false;
 
 // ==================== Hardware Configuration Instances ====================
 
@@ -326,6 +330,11 @@ static void handle_console_line(char* line) {
     ESP_LOGI(TAG, "STOP requested from console");
     sd_write_log("INFO", "STOP requested from console");
     g_stop_requested = true;
+  } else if (strcmp(line, "QUIT") == 0) {
+    ESP_LOGI(TAG, "QUIT requested from console: closing this session, then stopping");
+    sd_write_log("INFO", "QUIT requested from console");
+    g_stop_requested = true;
+    g_shutdown = true;
   } else if (strcmp(line, "STATUS") == 0) {
     uint32_t to = 0, ie = 0;
     ads1115_get_stats(&to, &ie);
@@ -543,11 +552,22 @@ extern "C" void app_main(void) {
   prov.rtc_set = (time(NULL) > 1600000000);
   metadata_set_provenance(&prov);
 
+  // ======================= SESSION LOOP (review-1 campaign) ==================
+  // Each pass is one complete recording: its own RUN_xxx, its own meta.json, its own
+  // checked close. The host drives the timeline with MARK and ends the session with
+  // STOP, exactly as before; the only difference is that the board then opens the next
+  // session instead of stopping. QUIT ends the loop after the current session closes.
+  // Nothing inside a session changes, so every review-1 fix applies unaltered.
+  uint32_t session_no = 0;
+  bool close_ok = false;
+  for (;;) {
+  session_no++;
+
   // Create run session
   if (!sd_create_run_session()) {
     ESP_LOGE(TAG, "Run session creation FAILED - aborting");
     gpio_set_level(RED_ERROR_LED_PIN, 1);
-    return;
+    break;
   }
   const run_session_t* session = sd_get_current_session();
   ESP_LOGI(TAG, "Run session created: %s at %s", session->run_id, session->run_path);
@@ -557,10 +577,18 @@ extern "C" void app_main(void) {
   fast_queue = xQueueCreate(FAST_QUEUE_SIZE, sizeof(fast_queue_msg_t));
   medium_queue = xQueueCreate(MEDIUM_QUEUE_SIZE, sizeof(medium_queue_msg_t));
   slow_queue = xQueueCreate(SLOW_QUEUE_SIZE, sizeof(slow_queue_msg_t));
-  if (!fast_queue || !medium_queue || !slow_queue) { ESP_LOGE(TAG, "Queue creation FAILED - aborting"); return; }
+  if (!fast_queue || !medium_queue || !slow_queue) { ESP_LOGE(TAG, "Queue creation FAILED - aborting"); break; }
+
+  // Per-session counters. Without this the second session would inherit the first
+  // session's sample counts, overruns and marker numbering.
+  statistics = {};
+  g_marker_count = 0;
+  g_stop_requested = false;
+  uint32_t ads_to_base = 0, ads_ie_base = 0;
+  ads1115_get_stats(&ads_to_base, &ads_ie_base);   // the driver's counters are cumulative
 
   system_state = DAQ_STATE_RUNNING;
-  ESP_LOGI(TAG, "System state -> RUNNING, launching tasks...");
+  ESP_LOGI(TAG, "System state -> RUNNING (session %" PRIu32 "), launching tasks...", session_no);
 
   xTaskCreatePinnedToCore(vTaskFast, "FastTask", 4096, NULL, 10, NULL, 0);
   xTaskCreatePinnedToCore(vTaskMedium, "MediumTask", 4096, NULL, 8, NULL, 0);
@@ -594,7 +622,7 @@ extern "C" void app_main(void) {
   metadata_update_statistics(session->meta_file, &statistics);
 
   // Close and verify (item 8)
-  bool close_ok = sd_close_run_session();
+  close_ok = sd_close_run_session();          // assigns the loop-scope flag; do not redeclare
   sd_close_report_t rep = {};
   sd_get_last_close(&rep);
   metadata_finalize(session->meta_file, rep.fast_bytes, rep.medium_bytes, rep.slow_bytes,
@@ -602,6 +630,8 @@ extern "C" void app_main(void) {
 
   uint32_t ads_to = 0, ads_ie = 0;
   ads1115_get_stats(&ads_to, &ads_ie);
+  ads_to -= ads_to_base;            // report this session's counts, not the boot total
+  ads_ie -= ads_ie_base;
   ESP_LOGI(TAG, "CLOSE %s: fast=%" PRIu32 " B medium=%" PRIu32 " B slow=%" PRIu32
            " B | fast=%" PRIu32 " medium=%" PRIu32 " slow=%" PRIu32 " samples | overruns=%" PRIu32
            " sd_errors=%" PRIu32 " ads_timeouts=%" PRIu32 " ads_i2c_err=%" PRIu32 " markers=%" PRIu32,
@@ -612,10 +642,27 @@ extern "C" void app_main(void) {
   vQueueDelete(fast_queue);
   vQueueDelete(medium_queue);
   vQueueDelete(slow_queue);
-  sd_storage_deinit();
+  fast_queue = medium_queue = slow_queue = NULL;
 
   gpio_set_level(GREEN_ACTIVITY_LED_PIN, 0);
   gpio_set_level(RED_ERROR_LED_PIN, close_ok ? 0 : 1);   // red stays on: the operator must not trust this session
 
-  ESP_LOGI(TAG, "========== Project SHIELD finished (%s) ==========", close_ok ? "session verified" : "SESSION NOT VERIFIED - red LED");
+  if (g_shutdown) {
+    ESP_LOGI(TAG, "QUIT: session %" PRIu32 " was the last one.", session_no);
+    break;
+  }
+  if (!close_ok) {
+    ESP_LOGE(TAG, "Session %" PRIu32 " did not close cleanly; stopping here rather than "
+             "recording more sessions on a card that may be faulty.", session_no);
+    break;
+  }
+  ESP_LOGI(TAG, "Session %" PRIu32 " closed. Opening the next session in 2 s "
+           "(send QUIT on the console to stop after a session).", session_no);
+  vTaskDelay(pdMS_TO_TICKS(2000));
+  }
+  // ===================== end of the session loop =============================
+
+  sd_storage_deinit();
+  ESP_LOGI(TAG, "========== Project SHIELD finished (%" PRIu32 " session(s), last %s) ==========",
+           session_no, close_ok ? "verified" : "NOT VERIFIED - red LED");
 }
